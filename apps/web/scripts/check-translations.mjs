@@ -7,20 +7,31 @@
  *   - missing keys (present in EN, absent in ES)
  *   - extra keys   (present in ES, absent in EN)
  *
- * Exits non-zero when ES coverage is below 100%.
+ * It also scans component source files for hardcoded English strings
+ * (JSX text nodes and common user-visible props) and reports them.
+ *
+ * Exits non-zero when ES coverage is below 100% or when hardcoded
+ * English strings are detected in component files.
  *
  * Usage: node scripts/check-translations.mjs [--source en] [--target es]
+ *        [--no-scan] [--scan-dir <path>]...
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MESSAGES_DIR = resolve(__dirname, "..", "messages");
+const DEFAULT_SCAN_DIRS = [resolve(__dirname, "..", "src")];
 
 function parseArgs(argv) {
-  const args = { source: "en", target: "es" };
+  const args = {
+    source: "en",
+    target: "es",
+    scan: true,
+    scanDirs: [...DEFAULT_SCAN_DIRS],
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--source" && argv[i + 1]) {
@@ -31,6 +42,14 @@ function parseArgs(argv) {
       args.source = arg.slice("--source=".length);
     } else if (arg.startsWith("--target=")) {
       args.target = arg.slice("--target=".length);
+    } else if (arg === "--no-scan") {
+      args.scan = false;
+    } else if (arg === "--scan-dir" && argv[i + 1]) {
+      if (args.scanDirs === DEFAULT_SCAN_DIRS) args.scanDirs = [];
+      args.scanDirs.push(resolve(argv[++i]));
+    } else if (arg.startsWith("--scan-dir=")) {
+      if (args.scanDirs === DEFAULT_SCAN_DIRS) args.scanDirs = [];
+      args.scanDirs.push(resolve(arg.slice("--scan-dir=".length)));
     }
   }
   return args;
@@ -83,8 +102,127 @@ function collectKeys(obj, prefix = "", out = new Set()) {
   return out;
 }
 
+const SCAN_EXTENSIONS = new Set([".tsx", ".jsx", ".ts", ".js"]);
+const SKIP_DIRS = new Set(["node_modules", "dist", "build", ".next", "coverage"]);
+
+// Props whose string values are rendered to the user and must be translated.
+const USER_VISIBLE_PROPS = [
+  "placeholder",
+  "title",
+  "alt",
+  "aria-label",
+  "aria-description",
+  "aria-placeholder",
+  "label",
+  "helperText",
+  "description",
+];
+
+// Matches JSX text nodes: text between a `>` and the next `<` on the same line.
+const JSX_TEXT_RE = />([^<>{}]+)</g;
+
+// Matches `prop="literal"` and `prop='literal'` for user-visible props.
+const PROP_RE = new RegExp(
+  `\\b(${USER_VISIBLE_PROPS.join("|")})\\s*=\\s*(["'])([^"']*)\\2`,
+  "g"
+);
+
+// Matches `prop={"literal"}` / `prop={'literal'}` for user-visible props.
+const PROP_EXPR_RE = new RegExp(
+  `\\b(${USER_VISIBLE_PROPS.join("|")})\\s*=\\s*\\{\\s*(["'])([^"']*)\\2\\s*\\}`,
+  "g"
+);
+
+// Matches toast/error helper calls with a literal English message, e.g.
+// toast.error("Something went wrong") or setError('Failed to save').
+const CALL_RE =
+  /\b(?:toast(?:\.(?:error|success|info|warning|message))?|setError|setMessage|setStatus|alert)\s*\(\s*(["'])([^"']*)\1/g;
+
+// A string is considered translatable English if it contains at least one
+// letter and is not purely a symbol/number/whitespace token.
+function looksLikeEnglish(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (!/[A-Za-z]/.test(trimmed)) return false;
+  // Ignore single characters, CSS-ish tokens, and obvious identifiers.
+  if (trimmed.length < 2) return false;
+  if (/^[a-z0-9_-]+$/i.test(trimmed) && !/\s/.test(trimmed) && trimmed.length < 4) {
+    return false;
+  }
+  return true;
+}
+
+function walkFiles(dir, out = []) {
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (SKIP_DIRS.has(entry)) continue;
+    const full = join(dir, entry);
+    let stat;
+    try {
+      stat = statSync(full);
+    } catch {
+      continue;
+    }
+    if (stat.isDirectory()) {
+      walkFiles(full, out);
+    } else if (SCAN_EXTENSIONS.has(entry.slice(entry.lastIndexOf(".")))) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+function lineOf(source, index) {
+  let line = 1;
+  for (let i = 0; i < index && i < source.length; i++) {
+    if (source[i] === "\n") line++;
+  }
+  return line;
+}
+
+function scanFile(filePath) {
+  const source = readFileSync(filePath, "utf8");
+  const findings = [];
+
+  const collect = (re, group) => {
+    re.lastIndex = 0;
+    let match;
+    while ((match = re.exec(source)) !== null) {
+      const text = match[group];
+      if (looksLikeEnglish(text)) {
+        findings.push({ line: lineOf(source, match.index), text: text.trim() });
+      }
+    }
+  };
+
+  collect(JSX_TEXT_RE, 1);
+  collect(PROP_RE, 3);
+  collect(PROP_EXPR_RE, 3);
+  collect(CALL_RE, 2);
+
+  return findings;
+}
+
+function scanComponents(scanDirs) {
+  const results = [];
+  for (const dir of scanDirs) {
+    for (const file of walkFiles(dir)) {
+      const findings = scanFile(file);
+      if (findings.length > 0) {
+        results.push({ file, findings });
+      }
+    }
+  }
+  return results;
+}
+
 function main() {
-  const { source, target } = parseArgs(process.argv.slice(2));
+  const { source, target, scan, scanDirs } = parseArgs(process.argv.slice(2));
 
   const sourcePath = resolve(MESSAGES_DIR, `${source}.json`);
   const targetPath = resolve(MESSAGES_DIR, `${target}.json`);
@@ -121,22 +259,51 @@ function main() {
     }
   }
 
-  if (missing.length === 0 && extra.length === 0) {
+  let hardcodedCount = 0;
+  if (scan) {
+    const scanResults = scanComponents(scanDirs);
+    hardcodedCount = scanResults.reduce(
+      (sum, r) => sum + r.findings.length,
+      0
+    );
+    if (hardcodedCount > 0) {
+      console.error(
+        `\nHardcoded English strings detected in component files (${hardcodedCount}):`
+      );
+      for (const { file, findings } of scanResults) {
+        console.error(`  ${relative(resolve(__dirname, ".."), file)}`);
+        for (const { line, text } of findings) {
+          console.error(`    ${line}: "${text}"`);
+        }
+      }
+      console.error(
+        "\nExtract these strings into messages/*.json and reference them via the i18n helper."
+      );
+    }
+  }
+
+  const keysInSync = missing.length === 0 && extra.length === 0;
+  if (keysInSync) {
     console.log(`\n✓ ${target}.json is fully in sync with ${source}.json.`);
-    process.exit(0);
   }
 
   if (coverage < 100) {
     console.error(
       `\n✗ Translation coverage for "${target}" is ${coverage.toFixed(2)}%, below the required 100%.`
     );
+  }
+
+  if (coverage < 100 || hardcodedCount > 0) {
     process.exit(1);
   }
 
-  // Coverage is 100% but there are extra keys — warn but do not fail.
-  console.warn(
-    `\n⚠ ${target}.json has extra keys not present in ${source}.json. Coverage is 100%.`
-  );
+  if (!keysInSync) {
+    // Coverage is 100% but there are extra keys — warn but do not fail.
+    console.warn(
+      `\n⚠ ${target}.json has extra keys not present in ${source}.json. Coverage is 100%.`
+    );
+  }
+
   process.exit(0);
 }
 
