@@ -1,4 +1,4 @@
-export const locales = ['en', 'es', 'fr', 'de', 'ar'] as const
+export const locales = ['en', 'es', 'fr', 'de', 'ar', 'pt-BR'] as const
 export type Locale = (typeof locales)[number]
 export const defaultLocale: Locale = 'en'
 
@@ -10,6 +10,7 @@ export const LOCALE_LABELS: Record<Locale, string> = {
   fr: 'FR',
   de: 'DE',
   ar: 'AR (preview)',
+  'pt-BR': 'PT-BR',
 }
 export const LOCALE_NAMES: Record<Locale, string> = {
   en: 'English',
@@ -17,6 +18,7 @@ export const LOCALE_NAMES: Record<Locale, string> = {
   fr: 'Français',
   de: 'Deutsch',
   ar: 'Arabic (RTL preview)',
+  'pt-BR': 'Português (BR)',
 }
 
 export const LOCALE_DIRECTIONS: Record<Locale, 'ltr' | 'rtl'> = {
@@ -25,6 +27,7 @@ export const LOCALE_DIRECTIONS: Record<Locale, 'ltr' | 'rtl'> = {
   fr: 'ltr',
   de: 'ltr',
   ar: 'rtl',
+  'pt-BR': 'ltr',
 }
 
 export const LOCALE_FORMATS: Record<Locale, string> = {
@@ -33,6 +36,7 @@ export const LOCALE_FORMATS: Record<Locale, string> = {
   fr: 'fr-FR',
   de: 'de-DE',
   ar: 'ar',
+  'pt-BR': 'pt-BR',
 }
 
 export function getFormatLocale(locale: Locale): string {

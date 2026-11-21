@@ -3,13 +3,13 @@
  * Translation coverage checker.
  *
  * Recursively compares the keys in messages/en.json (source) against
- * each target locale (default: es) and reports:
+ * each target locale (default: es, pt-BR) and reports:
  *   - missing keys (present in EN, absent in target)
  *   - extra keys   (present in target, absent in EN)
  *
  * Exits non-zero when any target locale's coverage is below 100%.
  *
- * Usage: node scripts/check-translations.mjs [--source en] [--target es,fr]
+ * Usage: node scripts/check-translations.mjs [--source en] [--target es] [--target pt-BR]
  */
 
 import { readFileSync } from "node:fs";
@@ -19,25 +19,25 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MESSAGES_DIR = resolve(__dirname, "..", "messages");
 
+const DEFAULT_TARGETS = ["es", "pt-BR"];
+
 function parseArgs(argv) {
-  const args = { source: "en", targets: ["es"] };
+  const args = { source: "en", targets: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--source" && argv[i + 1]) {
       args.source = argv[++i];
     } else if (arg === "--target" && argv[i + 1]) {
-      args.targets = argv[++i].split(",").map((t) => t.trim()).filter(Boolean);
+      args.targets.push(argv[++i]);
     } else if (arg.startsWith("--source=")) {
       args.source = arg.slice("--source=".length);
     } else if (arg.startsWith("--target=")) {
-      args.targets = arg
-        .slice("--target=".length)
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
+      args.targets.push(arg.slice("--target=".length));
     }
   }
-  if (args.targets.length === 0) args.targets = ["es"];
+  if (args.targets.length === 0) {
+    args.targets = [...DEFAULT_TARGETS];
+  }
   return args;
 }
 
@@ -90,9 +90,9 @@ function collectKeys(obj, prefix = "", out = new Set()) {
 
 /**
  * Check a single target locale against the source keys.
- * Returns true when the locale is fully in sync (no missing/extra keys).
+ * Returns true when the target is fully in sync (no missing or extra keys).
  */
-function checkLocale(source, target, sourceKeys) {
+function checkTarget(source, sourceKeys, target) {
   const targetPath = resolve(MESSAGES_DIR, `${target}.json`);
   const targetJson = loadJson(targetPath);
   const targetKeys = collectKeys(targetJson);
@@ -149,15 +149,17 @@ function main() {
   const sourceJson = loadJson(sourcePath);
   const sourceKeys = collectKeys(sourceJson);
 
-  let allPassed = true;
+  let allOk = true;
   for (const target of targets) {
-    if (!checkLocale(source, target, sourceKeys)) {
-      allPassed = false;
-    }
     console.log("");
+    const ok = checkTarget(source, sourceKeys, target);
+    if (!ok) allOk = false;
   }
 
-  process.exit(allPassed ? 0 : 1);
+  if (!allOk) {
+    process.exit(1);
+  }
+  process.exit(0);
 }
 
 main();
