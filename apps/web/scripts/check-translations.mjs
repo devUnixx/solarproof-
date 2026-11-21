@@ -3,17 +3,17 @@
  * Translation coverage checker.
  *
  * Recursively compares the keys in messages/en.json (source) against
- * messages/es.json (target) and reports:
- *   - missing keys (present in EN, absent in ES)
- *   - extra keys   (present in ES, absent in EN)
+ * each target locale (default: es, pt-BR) and reports:
+ *   - missing keys (present in EN, absent in target)
+ *   - extra keys   (present in target, absent in EN)
  *
  * It also scans component source files for hardcoded English strings
  * (JSX text nodes and common user-visible props) and reports them.
  *
- * Exits non-zero when ES coverage is below 100% or when hardcoded
- * English strings are detected in component files.
+ * Exits non-zero when any target locale's coverage is below 100% or when
+ * hardcoded English strings are detected in component files.
  *
- * Usage: node scripts/check-translations.mjs [--source en] [--target es]
+ * Usage: node scripts/check-translations.mjs [--source en] [--target es] [--target pt-BR]
  *        [--no-scan] [--scan-dir <path>]...
  */
 
@@ -25,10 +25,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const MESSAGES_DIR = resolve(__dirname, "..", "messages");
 const DEFAULT_SCAN_DIRS = [resolve(__dirname, "..", "src")];
 
+const DEFAULT_TARGETS = ["es", "pt-BR"];
+
 function parseArgs(argv) {
   const args = {
     source: "en",
-    target: "es",
+    targets: [],
     scan: true,
     scanDirs: [...DEFAULT_SCAN_DIRS],
   };
@@ -37,11 +39,11 @@ function parseArgs(argv) {
     if (arg === "--source" && argv[i + 1]) {
       args.source = argv[++i];
     } else if (arg === "--target" && argv[i + 1]) {
-      args.target = argv[++i];
+      args.targets.push(argv[++i]);
     } else if (arg.startsWith("--source=")) {
       args.source = arg.slice("--source=".length);
     } else if (arg.startsWith("--target=")) {
-      args.target = arg.slice("--target=".length);
+      args.targets.push(arg.slice("--target=".length));
     } else if (arg === "--no-scan") {
       args.scan = false;
     } else if (arg === "--scan-dir" && argv[i + 1]) {
@@ -51,6 +53,9 @@ function parseArgs(argv) {
       if (args.scanDirs === DEFAULT_SCAN_DIRS) args.scanDirs = [];
       args.scanDirs.push(resolve(arg.slice("--scan-dir=".length)));
     }
+  }
+  if (args.targets.length === 0) {
+    args.targets = [...DEFAULT_TARGETS];
   }
   return args;
 }
@@ -221,16 +226,14 @@ function scanComponents(scanDirs) {
   return results;
 }
 
-function main() {
-  const { source, target, scan, scanDirs } = parseArgs(process.argv.slice(2));
-
-  const sourcePath = resolve(MESSAGES_DIR, `${source}.json`);
+/**
+ * Check a single target locale against the source keys.
+ * Returns true when the target is fully in sync (no missing or extra keys)
+ * and no hardcoded English strings are detected.
+ */
+function checkTarget(source, sourceKeys, target, scan, scanDirs) {
   const targetPath = resolve(MESSAGES_DIR, `${target}.json`);
-
-  const sourceJson = loadJson(sourcePath);
   const targetJson = loadJson(targetPath);
-
-  const sourceKeys = collectKeys(sourceJson);
   const targetKeys = collectKeys(targetJson);
 
   const missing = [...sourceKeys].filter((k) => !targetKeys.has(k)).sort();
@@ -294,7 +297,7 @@ function main() {
   }
 
   if (coverage < 100 || hardcodedCount > 0) {
-    process.exit(1);
+    return false;
   }
 
   if (!keysInSync) {
@@ -302,6 +305,27 @@ function main() {
     console.warn(
       `\n⚠ ${target}.json has extra keys not present in ${source}.json. Coverage is 100%.`
     );
+  }
+
+  return true;
+}
+
+function main() {
+  const { source, targets, scan, scanDirs } = parseArgs(process.argv.slice(2));
+
+  const sourcePath = resolve(MESSAGES_DIR, `${source}.json`);
+  const sourceJson = loadJson(sourcePath);
+  const sourceKeys = collectKeys(sourceJson);
+
+  let allOk = true;
+  for (const target of targets) {
+    console.log("");
+    const ok = checkTarget(source, sourceKeys, target, scan, scanDirs);
+    if (!ok) allOk = false;
+  }
+
+  if (!allOk) {
+    process.exit(1);
   }
 
   process.exit(0);

@@ -24,15 +24,51 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    Sentry.captureException(error, { extra: { componentStack: info.componentStack } })
+    Sentry.captureException(error, {
+      extra: { componentStack: info.componentStack },
+      tags: { source: 'ErrorBoundary' },
+    })
   }
 
   reset = () => this.setState({ error: null })
 
+  private buildIssueUrl(error: Error): string {
+    const title = `[Web] ${error.name || 'Error'}: ${error.message || 'Unexpected error'}`.slice(0, 120)
+    const body = [
+      '### What happened?',
+      '',
+      '<!-- Describe what you were doing when the error occurred. -->',
+      '',
+      '### Error message',
+      '',
+      '```',
+      error.message || 'Unknown error',
+      '```',
+      '',
+      '### Stack trace',
+      '',
+      '```',
+      error.stack || 'No stack trace available',
+      '```',
+      '',
+      `_Reported from the web app on ${new Date().toISOString()}_`,
+    ].join('\n')
+
+    const params = new URLSearchParams({ title, body, labels: 'bug' })
+    return `https://github.com/${process.env.NEXT_PUBLIC_GITHUB_REPO ?? 'owner/repo'}/issues/new?${params.toString()}`
+  }
+
   render() {
     if (!this.state.error) return this.props.children
 
-    return <ErrorFallback inline={this.props.inline} label={this.props.label} onReset={this.reset} />
+    return (
+      <ErrorFallback
+        inline={this.props.inline}
+        label={this.props.label}
+        onReset={this.reset}
+        issueUrl={this.buildIssueUrl(this.state.error)}
+      />
+    )
   }
 }
 
@@ -40,9 +76,10 @@ interface FallbackProps {
   inline?: boolean
   label?: string
   onReset: () => void
+  issueUrl: string
 }
 
-function ErrorFallback({ inline, label, onReset }: FallbackProps) {
+function ErrorFallback({ inline, label, onReset, issueUrl }: FallbackProps) {
   const t = useTranslations('errors.boundary')
 
   if (inline) {
@@ -55,12 +92,22 @@ function ErrorFallback({ inline, label, onReset }: FallbackProps) {
         <p className="text-sm font-medium text-red-700 dark:text-red-400">
           {label ? t('panelFailedWithLabel', { label }) : t('panelFailed')}
         </p>
-        <button
-          onClick={onReset}
-          className="rounded-lg bg-red-100 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 dark:bg-red-900/40 dark:text-red-300 dark:hover:bg-red-900/60"
-        >
-          {t('retry')}
-        </button>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <button
+            onClick={onReset}
+            className="rounded-lg bg-red-100 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 dark:bg-red-900/40 dark:text-red-300 dark:hover:bg-red-900/60"
+          >
+            {t('retry')}
+          </button>
+          <a
+            href={issueUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/40"
+          >
+            {t('reportIssue')}
+          </a>
+        </div>
       </div>
     )
   }
@@ -75,13 +122,21 @@ function ErrorFallback({ inline, label, onReset }: FallbackProps) {
         {label ? t('panelFailedWithLabel', { label }) : t('title')}
       </h2>
       <p className="max-w-md text-gray-500 dark:text-gray-400">{t('description')}</p>
-      <div className="flex gap-3">
+      <div className="flex flex-wrap items-center justify-center gap-3">
         <button
           onClick={onReset}
           className="rounded-lg bg-yellow-400 px-5 py-2.5 font-semibold text-gray-900 hover:bg-yellow-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-yellow-400 focus-visible:ring-offset-2"
         >
           {t('tryAgain')}
         </button>
+        <a
+          href={issueUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="rounded-lg border border-gray-300 px-5 py-2.5 font-semibold text-gray-700 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+        >
+          {t('reportIssue')}
+        </a>
         <button
           onClick={() => window.location.reload()}
           className="rounded-lg border border-gray-300 px-5 py-2.5 font-semibold text-gray-700 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
