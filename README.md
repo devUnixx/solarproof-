@@ -80,6 +80,8 @@ Built with **Soroban SDK 23.1.0** and **OpenZeppelin Stellar v0.5.1**.
 
 > **New to the project?** See the [Developer Onboarding Guide](docs/ONBOARDING.md) for a step-by-step walkthrough from prerequisites to a live meter reading simulation.
 
+> **New cooperative operator?** See the [Operator Onboarding Guide](docs/ONBOARDING.md) ([Français](docs/ONBOARDING.fr.md)) for a step-by-step walkthrough from creating an account to verifying your first certificate, including screenshots and troubleshooting for common first-use errors.
+
 ### Prerequisites
 
 - Node.js v22+
