@@ -121,6 +121,160 @@ Contract changes require extra care:
 
 ---
 
+## Writing Soroban Contract Tests
+
+> See also: [README.md — Contract Tests](README.md#contract-tests)
+
+All Soroban contracts live under `apps/contracts/`. Each contract has its tests co-located in its `src/lib.rs` (unit tests) or in a `tests/` directory (integration tests).
+
+### Environment setup
+
+Every test that calls contract functions needs a `soroban_sdk::Env`. The idiomatic setup is:
+
+```rust
+use soroban_sdk::{testutils::Address as _, Env};
+
+fn setup() -> (Env, Address, MyContractClient<'static>) {
+    let env = Env::default();
+    // mock_all_auths() satisfies every require_auth() call without real signatures.
+    // Use it for unit tests. For auth-specific tests, use mock_auths() with explicit
+    // expectations instead.
+    env.mock_all_auths();
+
+    let contract_id = env.register(MyContract, ());
+    let client = MyContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    (env, admin, client)
+}
+```
+
+### Unit tests
+
+Unit tests live in a `#[cfg(test)] mod tests` block inside `src/lib.rs`. Keep each test focused on a single behaviour:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{testutils::Ledger, Env};
+
+    #[test]
+    fn test_anchor_records_ledger_sequence() {
+        let (env, api_signer, client) = setup();
+
+        // Advance the ledger so the sequence number is predictable.
+        env.ledger().set_sequence_number(42);
+
+        let hash = BytesN::from_array(&env, &[1u8; 32]);
+        let nonce = BytesN::from_array(&env, &[2u8; 32]);
+        client.anchor(&api_signer, &hash, &nonce);
+
+        let anchor = client.verify(&hash).unwrap();
+        assert_eq!(anchor.anchored_at_ledger, 42);
+    }
+
+    // Test that a function panics with a specific message.
+    #[test]
+    #[should_panic(expected = "already initialized")]
+    fn test_double_initialize_rejected() {
+        let (env, _, client) = setup();
+        let admin2 = Address::generate(&env);
+        client.initialize(&admin2); // must panic
+    }
+
+    // Test that a function returns a typed contract error.
+    #[test]
+    fn test_unauthorized_caller_rejected() {
+        let (env, _, client) = setup();
+        let attacker = Address::generate(&env);
+        assert_eq!(
+            client.try_anchor(&attacker, &hash(&env), &nonce(&env)),
+            Err(Ok(Error::Unauthorized))
+        );
+    }
+}
+```
+
+**Key patterns:**
+
+- Use `client.try_<fn>()` to test expected errors — it returns `Result<T, Result<Error, InvokeError>>`.
+- Use `#[should_panic(expected = "...")]` for panics with known messages.
+- Use `env.ledger().set_sequence_number(n)` or `env.ledger().with_mut(|l| l.sequence_number += n)` to control ledger state.
+- Generate test addresses with `Address::generate(&env)` — never hardcode them.
+
+### Snapshot tests
+
+Snapshot tests capture the full ledger state after a sequence of calls and compare it against a stored JSON file. They catch unintended storage layout changes.
+
+Snapshots are stored in `<contract>/test_snapshots/`. They are committed to the repository and must be updated deliberately — a snapshot diff in a PR signals a storage change that reviewers should scrutinise.
+
+```rust
+// Snapshot tests are ordinary #[test] functions. The soroban-sdk testutils
+// automatically write/compare the snapshot file based on the test name.
+#[test]
+fn test_anchor_and_verify() {
+    let (env, api_signer, client) = setup();
+    let hash = BytesN::from_array(&env, &[1u8; 32]);
+    client.anchor(&api_signer, &hash, &BytesN::from_array(&env, &[9u8; 32]));
+    // The snapshot file is written to:
+    // test_snapshots/tests/test_anchor_and_verify.1.json
+    assert!(client.is_anchored(&hash));
+}
+```
+
+If you intentionally change storage layout, regenerate snapshots by deleting the relevant `.json` files and running `cargo test` to recreate them. Commit the new files alongside your code change.
+
+### Proptest (property-based tests)
+
+Property tests live in `apps/contracts/proptest/`. They use the `proptest` crate to generate random inputs and assert invariants:
+
+```rust
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn mint_total_supply_equals_sum_of_balances(amount in 1_i128..1_000_000_i128) {
+        let env = Env::default();
+        env.mock_all_auths();
+        // ... set up and exercise the contract ...
+        // assert the invariant holds for every generated `amount`
+        prop_assert!(total_supply >= 0);
+    }
+}
+```
+
+### Running tests locally
+
+```bash
+# All contract tests
+cd apps/contracts
+cargo test
+
+# Single contract
+cargo test -p audit-registry
+
+# Single test by name
+cargo test -p audit-registry test_anchor_and_verify
+
+# With output (useful for debugging)
+cargo test -p audit-registry -- --nocapture
+
+# Proptest suite
+cargo test -p solarproof-proptest
+```
+
+### Naming convention
+
+Follow the same convention used for regression tests:
+
+- Rust: `fn test_<behaviour>()`  — e.g. `fn test_duplicate_anchor_rejected()`
+- Include the issue number for regression tests: `fn test_issue_73_duplicate_anchor_rejected()`
+
+---
+
 ## Reporting Issues
 
 Use the [issue templates](../../issues/new/choose). For security vulnerabilities, see [SECURITY.md](SECURITY.md).

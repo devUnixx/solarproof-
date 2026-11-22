@@ -48,6 +48,18 @@ We follow [coordinated vulnerability disclosure](https://en.wikipedia.org/wiki/C
 
 ---
 
+## Incident Playbooks
+
+| Scenario | Runbook |
+|---|---|
+| Compromised meter private key | [docs/runbooks/compromised-meter-key.md](docs/runbooks/compromised-meter-key.md) |
+| Compromised minter key / unauthorized mint | [docs/SECURITY_INCIDENT_PLAYBOOK.md](docs/SECURITY_INCIDENT_PLAYBOOK.md) |
+| Meter key scheduled rotation | [docs/runbooks/meter-key-rotation.md](docs/runbooks/meter-key-rotation.md) |
+| Minter key rotation | [docs/runbooks/minter-key-rotation.md](docs/runbooks/minter-key-rotation.md) |
+| General incident response | [docs/runbooks/incident-response.md](docs/runbooks/incident-response.md) |
+
+---
+
 ## Scope
 
 ### In Scope
