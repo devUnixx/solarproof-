@@ -41,6 +41,21 @@
 
 #![no_std]
 #![allow(deprecated)]
+// Pedantic lints are enabled in CI (issue #696). The allows below are
+// deliberate, with justification, rather than blanket-silencing the group.
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    clippy::module_name_repetitions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::similar_names,
+    clippy::too_many_lines,
+    clippy::unreadable_literal,
+    clippy::needless_pass_by_value
+)]
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Map,
@@ -194,6 +209,29 @@ fn bitmap_key(proposal_id: u32, word: u32) -> (soroban_sdk::Symbol, u32, u32) {
     (symbol_short!("bitmap"), proposal_id, word)
 }
 
+/// Returns `true` if `idx` is set in the bitmap for `proposal_id`.
+fn bitmap_get(env: &Env, proposal_id: u32, idx: u32) -> bool {
+    let word_idx = idx / 128;
+    let bit = idx % 128;
+    let word: u128 = env
+        .storage()
+        .persistent()
+        .get(&bitmap_key(proposal_id, word_idx))
+        .unwrap_or(0_u128);
+    (word >> bit) & 1 == 1
+}
+
+/// Sets bit `idx` in the bitmap for `proposal_id`.
+fn bitmap_set(env: &Env, proposal_id: u32, idx: u32) {
+    let word_idx = idx / 128;
+    let bit = idx % 128;
+    let key = bitmap_key(proposal_id, word_idx);
+    let word: u128 = env.storage().persistent().get(&key).unwrap_or(0_u128);
+    env.storage()
+        .persistent()
+        .set(&key, &(word | (1_u128 << bit)));
+}
+
 /// Return the voter's stable index, registering them if first seen.
 fn voter_index(env: &Env, voter: &Address) -> u32 {
     let key = DataKey::VoterIndex(voter.clone());
@@ -210,29 +248,6 @@ fn voter_index(env: &Env, voter: &Address) -> u32 {
         .instance()
         .set(&DataKey::VoterCount, &(count + 1));
     count
-}
-
-/// Check whether bit `idx` is set in the bitmap for `proposal_id`.
-fn bitmap_get(env: &Env, proposal_id: u32, idx: u32) -> bool {
-    let word_idx = idx / 128;
-    let bit = idx % 128;
-    let word: u128 = env
-        .storage()
-        .persistent()
-        .get(&bitmap_key(proposal_id, word_idx))
-        .unwrap_or(0_u128);
-    (word >> bit) & 1 == 1
-}
-
-/// Set bit `idx` in the bitmap for `proposal_id`.
-fn bitmap_set(env: &Env, proposal_id: u32, idx: u32) {
-    let word_idx = idx / 128;
-    let bit = idx % 128;
-    let key = bitmap_key(proposal_id, word_idx);
-    let word: u128 = env.storage().persistent().get(&key).unwrap_or(0_u128);
-    env.storage()
-        .persistent()
-        .set(&key, &(word | (1_u128 << bit)));
 }
 
 // ── contract ──────────────────────────────────────────────────────────────────
@@ -252,7 +267,7 @@ impl CommunityGovernance {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
         }
-        assert!(quorum >= 1 && quorum <= 10_000, "quorum_bps must be 1-10000");
+        assert!((1..=10_000).contains(&quorum), "quorum_bps must be 1-10000");
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -556,6 +571,9 @@ impl CommunityGovernance {
             .get(&DataKey::ThresholdBps)
             .unwrap_or(DEFAULT_THRESHOLD_BPS);
         let total_head = p.yes_votes + p.no_votes;
+        let total_head_i128 = i128::from(total_head);
+        let quorum_bps_i128 = i128::from(quorum_bps);
+        let threshold_bps_i128 = i128::from(threshold_bps);
 
         // Use weighted totals when available; when no TokenContract is set,
         // weight == 1 per vote so yes_weight == yes_votes (same result).
@@ -565,8 +583,8 @@ impl CommunityGovernance {
             // No votes cast at all → Expired
             ProposalStatus::Expired
         } else if total_weight > 0
-            && p.yes_weight * 10_000 / total_weight >= threshold_bps as i128
-            && total_head * 10_000 >= quorum_bps
+            && p.yes_weight * 10_000 / total_weight >= threshold_bps_i128
+            && total_head_i128 * 10_000 >= quorum_bps_i128
         {
             let timelock: u32 = env
                 .storage()
@@ -845,6 +863,7 @@ mod tests {
     };
 
     fn setup() -> (Env, Address, CommunityGovernanceClient<'static>) {
+        // Test helper: fixed quorum/voting period keeps individual tests terse.
         let env = Env::default();
         env.mock_all_auths();
         let id = env.register(CommunityGovernance, ());
@@ -1146,7 +1165,7 @@ mod tests {
         }
 
         // ⌈1000 / 128⌉ = 8 bitmap words written
-        let expected_bitmap_words: u32 = (1000_u32 + 127) / 128;
+        let expected_bitmap_words: u32 = 1000_u32.div_ceil(128);
         assert_eq!(expected_bitmap_words, 8, "bitmap word count");
 
         assert_eq!(client.get_proposal(&pid).unwrap().yes_votes, 1000);
@@ -1155,7 +1174,7 @@ mod tests {
     // ── upgrade timelock tests ────────────────────────────────────────────────
 
     fn dummy_hash(env: &Env) -> soroban_sdk::BytesN<32> {
-        soroban_sdk::BytesN::from_array(env, &[0xabu8; 32])
+        soroban_sdk::BytesN::from_array(env, &[0xab_u8; 32])
     }
 
     #[test]
@@ -1204,7 +1223,7 @@ mod tests {
     // ── proposal execution timelock tests ─────────────────────────────────────
 
     /// Helper: create a passed proposal (voting period = 100 ledgers, 2 yes votes).
-    fn pass_proposal(env: &Env, client: &CommunityGovernanceClient) -> u32 {
+    fn pass_proposal(env: &Env, client: &CommunityGovernanceClient<'_>) -> u32 {
         let proposer = Address::generate(env);
         let id = client.propose(
             &proposer,
@@ -1448,8 +1467,7 @@ mod tests {
         let propose_event = events.iter().find(|(_, topics, _)| {
             topics == &soroban_sdk::vec![&env, soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&symbol_short!("propose"), &env)]
         });
-        assert!(propose_event.is_some(), "propose event not emitted");
-        let (_, _, data) = propose_event.unwrap();
+        let (_, _, data) = propose_event.expect("propose event not emitted");
         let proposal_id: u32 = soroban_sdk::FromVal::from_val(&env, &data);
         assert_eq!(proposal_id, 1_u32);
     }
@@ -1469,8 +1487,7 @@ mod tests {
         let vote_event = events.iter().find(|(_, topics, _)| {
             topics == &soroban_sdk::vec![&env, soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&symbol_short!("vote"), &env)]
         });
-        assert!(vote_event.is_some(), "vote event not emitted");
-        let (_, _, data) = vote_event.unwrap();
+        let (_, _, data) = vote_event.expect("vote event not emitted");
         let (pid, _voter_addr, approve): (u32, Address, bool) =
             soroban_sdk::FromVal::from_val(&env, &data);
         assert_eq!(pid, id);
@@ -1494,8 +1511,7 @@ mod tests {
         let final_event = events.iter().find(|(_, topics, _)| {
             topics == &soroban_sdk::vec![&env, soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&symbol_short!("final"), &env)]
         });
-        assert!(final_event.is_some(), "finalize event not emitted");
-        let (_, _, data) = final_event.unwrap();
+        let (_, _, data) = final_event.expect("finalize event not emitted");
         let (pid, status): (u32, ProposalStatus) = soroban_sdk::FromVal::from_val(&env, &data);
         assert_eq!(pid, id);
         assert_eq!(status, ProposalStatus::Passed);
@@ -1521,8 +1537,7 @@ mod tests {
         let exec_event = events.iter().find(|(_, topics, _)| {
             topics == &soroban_sdk::vec![&env, soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&symbol_short!("exec"), &env)]
         });
-        assert!(exec_event.is_some(), "execute event not emitted");
-        let (_, _, data) = exec_event.unwrap();
+        let (_, _, data) = exec_event.expect("execute event not emitted");
         let pid: u32 = soroban_sdk::FromVal::from_val(&env, &data);
         assert_eq!(pid, id);
     }

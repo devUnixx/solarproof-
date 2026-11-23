@@ -110,7 +110,21 @@ Before opening a PR, confirm:
 
 ---
 
+## Dependency Updates
+
+Dependency updates are automated via [Dependabot](.github/dependabot.yml):
+
+- **Schedule** — grouped PRs are opened weekly for npm and cargo dependencies, and monthly for GitHub Actions.
+- **Auto-merge** — minor and patch updates for npm and cargo are auto-merged once **all** CI checks pass, via [`.github/workflows/dependabot-auto-merge.yml`](.github/workflows/dependabot-auto-merge.yml).
+- **Major version bumps** — ignored by Dependabot and require a human-authored PR with review.
+- **Security advisories** — follow the existing severity-based auto-merge rules.
+
+If you need to land a dependency change manually, open a regular PR following the checklist above.
+
+---
+
 ## Smart Contract Changes
+=======
 
 Contract changes require extra care:
 
