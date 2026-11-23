@@ -10,4 +10,15 @@
 # id = "RUSTSEC-2023-0001"  # only affects feature X which we don't use — reviewed 2026-04-23
 
 [advisories]
-ignore = []
+ignore = [
+    # `derivative` is unmaintained (RUSTSEC-2024-0388). It is pulled in
+    # transitively and has no fixed upgrade available. Tracked for replacement
+    # with a maintained alternative. — reviewed 2026-10-23
+    "RUSTSEC-2024-0388",
+    # `paste` is no longer maintained (RUSTSEC-2024-0436). It is pulled in
+    # transitively and has no fixed upgrade available. Tracked for replacement
+    # with a maintained alternative. — reviewed 2026-10-23
+    "RUSTSEC-2024-0436",
+]
+# NOTE: RUSTSEC-2026-0387 (crypto-bigint timing variability) is intentionally
+# NOT ignored. It must be resolved by upgrading crypto-bigint to >=0.7.6.
