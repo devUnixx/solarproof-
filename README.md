@@ -214,6 +214,50 @@ solarproof/
 
 ---
 
+## Infrastructure as Code
+
+Production infrastructure is managed with **Terraform** under [`infra/terraform`](infra/terraform). Manual changes in the Supabase or Vercel dashboards will show up as drift in `terraform plan` and should be reconciled through code.
+
+### What is managed
+
+| Module | Resources |
+|---|---|
+| `modules/supabase` | Supabase project, Edge Functions, and project secrets |
+| `modules/vercel` | Vercel project and environment variables |
+
+### Remote state
+
+State is stored in an encrypted S3 backend with DynamoDB state locking:
+
+| Setting | Value |
+|---|---|
+| Backend | S3 (`solarproof-terraform-state`) |
+| Locking | DynamoDB table (`solarproof-terraform-locks`) |
+| Encryption | SSE enabled on the bucket; state is never committed to git |
+
+Backend configuration lives in `infra/terraform/backend.tf` and is initialised with:
+
+```bash
+cd infra/terraform
+terraform init
+```
+
+### Usage
+
+```bash
+cd infra/terraform
+terraform plan    # review drift / pending changes
+terraform apply   # provision Supabase + Vercel resources
+```
+
+Secrets (Supabase access token, Vercel API token, etc.) are supplied via environment variables (`TF_VAR_*`) and are never stored in the repository.
+
+### CI
+
+The [`terraform-plan`](.github/workflows/terraform-plan.yml) workflow runs `terraform fmt -check`, `terraform validate`, and `terraform plan` on every pull request that touches `infra/terraform/**`, then posts the plan diff as a PR comment for review.
+
+---
+
 ## Status & Uptime Monitoring
 
 Production endpoint health is tracked at **[status.solarproof.app](https://status.solarproof.app)**, powered by [Upptime](https://upptime.js.org) via the `katecatherinaa/solarproof-status` repository.

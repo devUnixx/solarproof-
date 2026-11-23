@@ -329,6 +329,8 @@ impl EnergyToken {
     ///
     /// # Panics
     /// * `"not initialized"` if the contract has not been initialised.
+    /// # Events
+    /// Emits `(topic: "minter_upd", data: (old_minter, new_minter))`.
     pub fn set_minter(env: Env, new_minter: Address) {
         let admin: Address = env
             .storage()
@@ -336,7 +338,66 @@ impl EnergyToken {
             .get(&DataKey::Admin)
             .expect("not initialized");
         admin.require_auth();
+        let old_minter: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Minter)
+            .expect("not initialized");
         env.storage().instance().set(&DataKey::Minter, &new_minter);
+        env.events().publish(
+            (symbol_short!("minter_upd"),),
+            (old_minter, new_minter),
+        );
+    }
+
+    /// Pause the contract, blocking mint, transfer, transfer_from and burn operations.
+    ///
+    /// # Authorization
+    /// Requires `admin` authorisation.
+    ///
+    /// # Panics
+    /// * `"not initialized"` if the contract has not been initialised.
+    ///
+    /// # Events
+    /// Emits `(topic: "paused", data: admin)`.
+    pub fn pause(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &true);
+        env.events().publish((symbol_short!("paused"),), admin);
+    }
+
+    /// Unpause the contract, re-enabling mint, transfer, transfer_from and burn operations.
+    ///
+    /// # Authorization
+    /// Requires `admin` authorisation.
+    ///
+    /// # Panics
+    /// * `"not initialized"` if the contract has not been initialised.
+    ///
+    /// # Events
+    /// Emits `(topic: "unpaused", data: admin)`.
+    pub fn unpause(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.events().publish((symbol_short!("unpaused"),), admin);
+    }
+
+    /// Returns `true` if the contract is currently paused.
+    pub fn paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
     }
 
     /// Returns the admin address.
@@ -1349,6 +1410,98 @@ mod tests {
         // Existing balance is untouched
         assert_eq!(client.balance(&holder), 1_000_i128);
         assert_eq!(client.total_supply(), 1_000_i128);
+    }
+
+    // ── event emission tests for state-changing admin ops (#698) ────────────
+
+    #[test]
+    fn test_set_minter_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register(EnergyToken, ());
+        let client = EnergyTokenClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let old_minter = Address::generate(&env);
+        let new_minter = Address::generate(&env);
+        client.initialize(&admin, &old_minter);
+
+        client.set_minter(&new_minter);
+
+        let events = env.events().all();
+        let evt = events.iter().find(|(_, topics, _)| {
+            topics
+                == &soroban_sdk::vec![
+                    &env,
+                    soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(
+                        &symbol_short!("minter_upd"),
+                        &env
+                    )
+                ]
+        });
+        assert!(evt.is_some(), "minter_upd event not emitted");
+        let (_, _, data) = evt.unwrap();
+        let (from, to): (Address, Address) = soroban_sdk::FromVal::from_val(&env, &data);
+        assert_eq!(from, old_minter);
+        assert_eq!(to, new_minter);
+    }
+
+    #[test]
+    fn test_pause_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register(EnergyToken, ());
+        let client = EnergyTokenClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let minter = Address::generate(&env);
+        client.initialize(&admin, &minter);
+
+        client.pause();
+
+        let events = env.events().all();
+        let evt = events.iter().find(|(_, topics, _)| {
+            topics
+                == &soroban_sdk::vec![
+                    &env,
+                    soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(
+                        &symbol_short!("paused"),
+                        &env
+                    )
+                ]
+        });
+        assert!(evt.is_some(), "paused event not emitted");
+        let (_, _, data) = evt.unwrap();
+        let emitted_admin: Address = soroban_sdk::FromVal::from_val(&env, &data);
+        assert_eq!(emitted_admin, admin);
+    }
+
+    #[test]
+    fn test_unpause_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register(EnergyToken, ());
+        let client = EnergyTokenClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let minter = Address::generate(&env);
+        client.initialize(&admin, &minter);
+        client.pause();
+
+        client.unpause();
+
+        let events = env.events().all();
+        let evt = events.iter().find(|(_, topics, _)| {
+            topics
+                == &soroban_sdk::vec![
+                    &env,
+                    soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(
+                        &symbol_short!("unpaused"),
+                        &env
+                    )
+                ]
+        });
+        assert!(evt.is_some(), "unpaused event not emitted");
+        let (_, _, data) = evt.unwrap();
+        let emitted_admin: Address = soroban_sdk::FromVal::from_val(&env, &data);
+        assert_eq!(emitted_admin, admin);
     }
 
     // ── SEP-41 client interaction simulation (issue #53) ────────────────────

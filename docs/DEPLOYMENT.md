@@ -123,7 +123,78 @@ GitHub → Actions → Deploy Contracts → Run workflow
 
 ---
 
-## 5. Verify deployed bytecode on Stellar Expert
+## 5. Infrastructure as code (Terraform)
+
+Production Supabase and Vercel resources are managed with Terraform. Manual changes in the cloud consoles will show up as drift in `terraform plan` and should be reconciled through code.
+
+### 5a. Module layout
+
+```
+infra/
+├── backend.tf              # S3 + DynamoDB remote state backend
+├── main.tf                 # Root module wiring
+├── variables.tf
+├── outputs.tf
+├── modules/
+│   ├── supabase/           # Supabase project, Edge Functions, secrets
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   └── vercel/             # Vercel project and environment variables
+│       ├── main.tf
+│       ├── variables.tf
+│       └── outputs.tf
+└── envs/
+    ├── staging/
+    └── production/
+```
+
+- **`modules/supabase`** provisions the Supabase project, deploys Edge Functions from `supabase/functions/`, and manages project secrets (service role key, `MINTER_SECRET_KEY`, etc.). Secret values are supplied via variables and never committed.
+- **`modules/vercel`** provisions the Vercel project, links it to the repository, and manages environment variables (`NEXT_PUBLIC_STELLAR_NETWORK`, contract IDs, Supabase URL/anon key) per environment.
+
+### 5b. Remote state backend
+
+State is stored in an encrypted S3 bucket with DynamoDB state locking, configured in `infra/backend.tf`:
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket         = "solarproof-terraform-state"
+    key            = "production/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "solarproof-terraform-locks"
+    encrypt        = true
+  }
+}
+```
+
+The bucket has versioning and server-side encryption (SSE-KMS) enabled, and public access is blocked. The DynamoDB table uses `LockID` as its partition key. Backend credentials come from the CI OIDC role or your local AWS profile — never from committed files.
+
+### 5c. Running plan and apply
+
+```bash
+cd infra/envs/production
+terraform init          # downloads providers and configures the S3 backend
+terraform plan          # review the diff before applying
+terraform apply         # apply after review (requires approval in CI)
+```
+
+Use `infra/envs/staging` for non-production changes. Never run `apply` against production from a laptop without a second reviewer.
+
+### 5d. Plan on pull requests
+
+The `.github/workflows/terraform-plan.yml` workflow runs on every PR that touches `infra/**`:
+
+1. Authenticates to AWS via GitHub OIDC (no long-lived keys).
+2. Runs `terraform fmt -check` and `terraform validate`.
+3. Runs `terraform plan` for each environment and posts the diff as a PR comment (updated in place on subsequent pushes).
+4. Fails the check if the plan cannot be generated.
+
+`terraform apply` runs only from `main` after merge, gated by a manual approval on the protected `production` environment.
+
+---
+
+## 6. Verify deployed bytecode on Stellar Expert
 
 After deployment, confirm the on-chain WASM matches your local build:
 
@@ -140,7 +211,7 @@ sha256sum target/wasm32-unknown-unknown/release/energy_token.wasm
 
 ---
 
-## 6. Rollback procedure
+## 7. Rollback procedure
 
 Soroban contracts are immutable once deployed — you cannot overwrite a contract ID. The rollback procedure is:
 
@@ -154,7 +225,7 @@ For the `audit_registry` contract specifically, all historical anchors remain va
 
 ---
 
-## 7. Register a meter after deployment
+## 8. Register a meter after deployment
 
 ```bash
 node scripts/gen-meter-key.mjs

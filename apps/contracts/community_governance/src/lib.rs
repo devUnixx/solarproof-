@@ -830,6 +830,36 @@ impl CommunityGovernance {
     pub fn admin(env: Env) -> Address {
         env.storage().instance().get(&DataKey::Admin).expect("not initialized")
     }
+
+    /// Rotate the contract admin to `new_admin`. Admin-only.
+    ///
+    /// # Arguments
+    /// * `admin`     — current admin address (must authorise).
+    /// * `new_admin` — address that becomes the new admin.
+    ///
+    /// # Authorization
+    /// Requires `admin` authorisation.
+    ///
+    /// # Panics
+    /// * `"not initialized"` if the contract has not been initialised.
+    /// * `"not admin"` if `admin` is not the stored admin.
+    ///
+    /// # Events
+    /// Emits `(topic: "admin_rot", data: (old_admin, new_admin))`.
+    pub fn set_admin(env: Env, admin: Address, new_admin: Address) {
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        assert!(admin == stored_admin, "not admin");
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (symbol_short!("admin_rot"),),
+            (stored_admin, new_admin),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,6 +1444,41 @@ mod tests {
             client.get_proposal(&id).unwrap().status,
             ProposalStatus::Rejected
         );
+    }
+
+    // ── admin rotation event tests (#698) ────────────────────────────────────
+
+    #[test]
+    fn test_set_admin_rotates_admin() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.set_admin(&admin, &new_admin);
+        assert_eq!(client.admin(), new_admin);
+    }
+
+    #[test]
+    fn test_set_admin_emits_admin_rotated_event() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.set_admin(&admin, &new_admin);
+        let events = env.events().all();
+        let rot_event = events.iter().find(|(_, topics, _)| {
+            topics == &soroban_sdk::vec![&env, soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&symbol_short!("admin_rot"), &env)]
+        });
+        assert!(rot_event.is_some(), "admin_rot event not emitted");
+        let (_, _, data) = rot_event.unwrap();
+        let (old_admin, rotated_to): (Address, Address) =
+            soroban_sdk::FromVal::from_val(&env, &data);
+        assert_eq!(old_admin, admin);
+        assert_eq!(rotated_to, new_admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "not admin")]
+    fn test_non_admin_cannot_set_admin() {
+        let (env, _admin, client) = setup();
+        let rogue = Address::generate(&env);
+        client.set_admin(&rogue, &Address::generate(&env));
     }
 
     /// get_version returns the expected version string.
