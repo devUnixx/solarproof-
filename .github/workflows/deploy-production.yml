@@ -16,10 +16,23 @@ jobs:
     needs: ci
     permissions:
       deployments: write
+    # ------------------------------------------------------------------
+    # GitHub Environment: 'production'
+    # This environment is configured in repository settings with
+    # REQUIRED REVIEWERS (at least 1). The job will pause here and wait
+    # for manual approval before any deployment steps run.
+    # See DEPLOYMENT.md for details on deployment protection rules.
+    # ------------------------------------------------------------------
     environment:
       name: production
       url: ${{ steps.promote.outputs.url }}
     steps:
+      - name: Await production approval
+        run: |
+          echo "### ✅ Production deployment approved" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Approved by: @${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Commit: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
         with:
           # Full history so Sentry can resolve commits in the release
