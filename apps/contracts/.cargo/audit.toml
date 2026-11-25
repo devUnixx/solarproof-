@@ -1,0 +1,32 @@
+# cargo audit configuration
+# Advisories listed here are known transitive-dependency issues that cannot
+# be resolved independently of the upstream Soroban SDK. Each entry is
+# reviewed and tracked via the linked GitHub issue.
+
+[advisories]
+# Warn when an ignored advisory is no longer present (helps keep this list tidy)
+warn_unused_ignores = true
+
+ignore = [
+    # RUSTSEC-2026-0387: crypto-bigint 0.5.5 — multiple timing variability
+    # issues in operations intended to be constant-time.
+    # Root cause: soroban-env-host depends on elliptic-curve ^0.13.x, which
+    # requires crypto-bigint 0.5.x. The advisory fix (>=0.7.6) is a
+    # semver-incompatible major version; no published version of the Soroban
+    # SDK currently pulls in a compatible chain. This is tracked upstream and
+    # will be resolved when soroban-env-host migrates to elliptic-curve 0.14+.
+    # Reviewed 2026-11-30 · issue #230
+    "RUSTSEC-2026-0387",
+
+    # RUSTSEC-2024-0388: derivative 2.2.0 — unmaintained crate.
+    # Transitive dependency through soroban-env-host → ark-* crates.
+    # No upstream replacement available yet.
+    # Reviewed 2026-11-30 · issue #230
+    "RUSTSEC-2024-0388",
+
+    # RUSTSEC-2024-0436: paste 1.0.15 — unmaintained crate.
+    # Transitive dependency through soroban SDK macro crates.
+    # No upstream replacement available yet.
+    # Reviewed 2026-11-30 · issue #230
+    "RUSTSEC-2024-0436",
+]
