@@ -229,6 +229,45 @@ Contract changes require extra care:
 
 ---
 
+## GitHub Actions Pinning Policy
+
+All third-party actions used in `.github/workflows/` **must be pinned to a full 40-character commit SHA** — never a mutable tag or branch (e.g. `@v4`, `@main`). A compromised or re-pointed tag could inject malicious code into CI, so SHAs are the only trusted reference.
+
+### Format
+
+Always add a trailing comment with the human-readable version so updates are reviewable:
+
+```yaml
+- uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+- uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+```
+
+Rules:
+
+- The SHA must be the **full 40 hex characters** — short SHAs are rejected.
+- The `# vX.Y.Z` comment is required and must match the pinned release.
+- Local actions (`./.github/actions/...`) and reusable workflows in this repo are exempt.
+- Never use `@latest`, `@main`, `@master`, or floating major tags (`@v4`).
+
+### Enforcement
+
+- **`supply-chain.yml`** runs on every PR and push to `develop`/`main`. It scans all workflow files and **fails the build** if any `uses:` entry references an action by tag, branch, or short SHA.
+- **Dependabot** (`.github/dependabot.yml`, `github-actions` ecosystem) opens PRs that bump pinned SHAs and update the version comment. Review and merge these like any other dependency update — do not edit the SHA by hand unless Dependabot can't.
+
+### Updating a pinned SHA
+
+1. Find the release tag you want on the action's GitHub releases page.
+2. Resolve the tag to its commit SHA:
+   ```bash
+   git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>
+   # or, for annotated tags, dereference with ^{}:
+   git ls-remote https://github.com/<owner>/<repo> 'refs/tags/<tag>*'
+   ```
+3. Replace the `uses:` line with the new SHA and update the `# vX.Y.Z` comment.
+4. Run the `supply-chain.yml` check locally (or push and let CI run) to confirm the pin is valid.
+
+---
+
 ## Reporting Issues
 
 Use the [issue templates](../../issues/new/choose). For security vulnerabilities, see [SECURITY.md](SECURITY.md).
