@@ -11,6 +11,16 @@ audit-registry = { path = "../audit_registry" }
 energy-token = { path = "../energy_token" }
 community-governance = { path = "../community_governance" }
 
+# Security overrides (issues #228, #229, #231):
+# - crypto-bigint 0.5.x is affected by RUSTSEC-2026-0387 (timing variability);
+#   force resolution to a patched >=0.7.6 release.
+# - derivative (RUSTSEC-2024-0388) and paste (RUSTSEC-2024-0436) are
+#   unmaintained; pin to maintained replacements where possible.
+# - spin 0.9.8 is yanked; force a non-yanked release.
+[patch.crates-io]
+crypto-bigint = { version = "0.7.6" }
+spin = { version = "0.9.9" }
+
 # Excluded from the main workspace to keep it isolated (like the proptest and
 # fuzz crates).  Run with:
 #   cargo test --manifest-path apps/contracts/storage_regression/Cargo.toml

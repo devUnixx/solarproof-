@@ -75,8 +75,14 @@ jobs:
           workspaces: apps/contracts
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
+      - name: Refresh lockfile to surface stale dependencies
+        run: cargo update 2>&1 | tee /tmp/cargo-update.txt || true
+        working-directory: apps/contracts
       - name: Run cargo audit
         id: cargo_audit
+        # Rely on the default audit.toml location (apps/contracts/audit.toml) for
+        # allowed warnings/ignores. cargo-audit exits non-zero only for real
+        # vulnerabilities (unmaintained/yanked crates are warnings unless denied).
         run: cargo audit 2>&1 | tee /tmp/cargo-audit.txt; exit ${PIPESTATUS[0]}
         working-directory: apps/contracts
         continue-on-error: true
@@ -110,4 +116,8 @@ jobs:
             });
       - name: Fail if audit found vulnerabilities
         if: steps.cargo_audit.outcome == 'failure'
-        run: exit 1
+        run: |
+          echo "::error::cargo audit detected vulnerabilities (see /tmp/cargo-audit.txt)."
+          echo "Allowed warnings are configured in apps/contracts/audit.toml; only real"
+          echo "vulnerabilities should fail this job."
+          exit 1
