@@ -18,40 +18,14 @@ function isCsrfExempt(pathname: string): boolean {
   return CSRF_EXEMPT_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))
 }
 
-/**
- * Generates a cryptographically random, base64-encoded nonce suitable for use
- * in a Content-Security-Policy `nonce-{value}` source expression.
- */
-function generateCspNonce(): string {
-  const bytes = new Uint8Array(16)
-  crypto.getRandomValues(bytes)
-  let binary = ''
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte)
-  }
-  return btoa(binary)
-}
+/** Public, unauthenticated page routes that must never be redirected to login. */
+const PUBLIC_PATHS = [
+  '/explore',            // Public certificate explorer — no auth required
+  '/verify',             // Public certificate verifier
+]
 
-/**
- * Builds the Content-Security-Policy header value for a given nonce.
- * Inline scripts are allowed only via the per-request nonce; 'unsafe-inline'
- * is intentionally omitted from script-src. style-src retains 'unsafe-inline'
- * because Next.js injects inline styles that are not nonce-aware.
- */
-function buildCspHeader(nonce: string): string {
-  const directives = [
-    "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}' https://js.sentry-cdn.com https://browser.sentry-cdn.com`,
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob: https:",
-    "font-src 'self' data:",
-    "connect-src 'self' https:",
-    "object-src 'none'",
-    "base-uri 'self'",
-    "frame-ancestors 'none'",
-    'report-uri /api/csp-report',
-  ]
-  return directives.join('; ')
+function isPublicPath(pathname: string): boolean {
+  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))
 }
 
 /** Methods that carry a request body and must declare a JSON Content-Type. */
@@ -130,6 +104,28 @@ export function middleware(req: NextRequest) {
     return new NextResponse(null, { status: 403 })
   }
 
+  // ── Public routes ─────────────────────────────────────────────────────────
+  // Public pages (e.g. /explore, /verify) require no authentication and are
+  // never redirected to login. They are also excluded from CSRF/auth gating.
+  if (isPublicPath(pathname)) {
+    const correlationId = req.headers.get('x-correlation-id') ?? crypto.randomUUID()
+    const res = NextResponse.next({
+      request: {
+        headers: new Headers({
+          ...Object.fromEntries(req.headers),
+          'x-correlation-id': correlationId,
+        }),
+      },
+    })
+    res.headers.set('x-correlation-id', correlationId)
+    if (corsHeaders) {
+      for (const [k, v] of Object.entries(corsHeaders)) {
+        res.headers.set(k, v)
+      }
+    }
+    return res
+  }
+
   // ── Content-Type validation ──────────────────────────────────────────────
   // Reject state-mutating API requests that do not declare a JSON body.
   // This blocks CSRF via HTML form submission (which sends
@@ -187,6 +183,34 @@ export function middleware(req: NextRequest) {
       }
     }
     return redirect
+  }
+
+  // ── Embeddable certificate widget ─────────────────────────────────────────
+  // /embed/certificate/[id] is a public, unauthenticated, iframe-embeddable
+  // page for third-party sites. It is cache-friendly and must not be blocked
+  // by auth or CSRF checks. We short-circuit here so the route is served
+  // directly with the appropriate framing and caching headers.
+  const isEmbedPath = /^\/embed\/certificate\/[^/]+$/.test(pathname)
+  if (isEmbedPath) {
+    const embedRes = NextResponse.next()
+    // Allow embedding in third-party iframes (overrides any global DENY).
+    embedRes.headers.set('X-Frame-Options', 'ALLOWALL')
+    embedRes.headers.set(
+      'Content-Security-Policy',
+      "frame-ancestors *",
+    )
+    // Cache-friendly: public, long-lived, with stale-while-revalidate.
+    embedRes.headers.set(
+      'Cache-Control',
+      'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400',
+    )
+    embedRes.headers.set('X-Content-Type-Options', 'nosniff')
+    embedRes.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+    embedRes.headers.set('API-Version', 'v1')
+    const embedCorrelationId =
+      req.headers.get('x-correlation-id') ?? crypto.randomUUID()
+    embedRes.headers.set('x-correlation-id', embedCorrelationId)
+    return embedRes
   }
 
   // ── Verify endpoint abuse protection ──────────────────────────────────────
