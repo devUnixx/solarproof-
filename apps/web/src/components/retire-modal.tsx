@@ -94,7 +94,7 @@ export function RetireModal({ certificateId, kwh, onConfirm, onClose }: Props) {
             type="button"
             onClick={onClose}
             disabled={submitting}
-            aria-label="Close retire certificate dialog"
+            aria-label="Close retire modal"
             className="rounded p-1 text-gray-400 hover:text-gray-600 disabled:cursor-not-allowed dark:hover:text-gray-200"
           >
             <X className="h-4 w-4" aria-hidden="true" />
