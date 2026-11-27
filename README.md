@@ -111,6 +111,8 @@ stellar contract build
 cargo test
 ```
 
+For guidance on writing contract tests (unit tests, snapshot tests, proptest), see [CONTRIBUTING.md — Writing Soroban Contract Tests](CONTRIBUTING.md#writing-soroban-contract-tests).
+
 ### Docker (recommended for local development)
 
 Spin up the full stack — Next.js, Supabase, and Redis — with a single command:
