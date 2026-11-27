@@ -41,6 +41,24 @@
 //! step on every pull request that touches `apps/contracts/`.
 
 #![cfg(test)]
+// Pedantic lints are enabled in CI (`-W clippy::pedantic`).  This crate is a
+// test-only harness that intentionally uses patterns pedantic flags (e.g.
+// `as` casts for byte-length measurement, `f64` arithmetic for averages).
+// Allow those specific lints crate-wide with justification rather than
+// sprinkling attributes across every test.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::items_after_statements,
+    clippy::unreadable_literal,
+    clippy::similar_names,
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate
+)]
 
 // ---------------------------------------------------------------------------
 // Budget assertion helper
@@ -94,6 +112,9 @@ mod audit_registry_tests {
         (env, api_signer, client)
     }
 
+    #[allow(clippy::unnecessary_wraps)]
+    fn _pedantic_marker() {}
+
     fn make_hash(env: &Env, byte: u8) -> BytesN<32> {
         BytesN::from_array(env, &[byte; 32])
     }
@@ -120,7 +141,10 @@ mod audit_registry_tests {
                 .instance()
                 .all()
                 .iter()
-                .map(|(k, v)| k.to_xdr(env).len() as usize + v.to_xdr(env).len() as usize)
+                .map(|(k, v)| {
+                    usize::try_from(k.to_xdr(env).len()).unwrap_or(usize::MAX)
+                        + usize::try_from(v.to_xdr(env).len()).unwrap_or(usize::MAX)
+                })
                 .sum::<usize>()
         })
     }
@@ -184,7 +208,10 @@ mod audit_registry_tests {
         env.as_contract(&client.address, || {
             let key = DataKey::Bucket(0);
             match env.storage().persistent().get::<_, soroban_sdk::Val>(&key) {
-                Some(v) => key.to_xdr(&env).len() as usize + v.to_xdr(&env).len() as usize,
+                Some(v) => {
+                    usize::try_from(key.to_xdr(&env).len()).unwrap_or(usize::MAX)
+                        + usize::try_from(v.to_xdr(&env).len()).unwrap_or(usize::MAX)
+                }
                 None => 0,
             }
         })
@@ -292,7 +319,10 @@ mod energy_token_tests {
                 .instance()
                 .all()
                 .iter()
-                .map(|(k, v)| k.to_xdr(env).len() as usize + v.to_xdr(env).len() as usize)
+                .map(|(k, v)| {
+                    usize::try_from(k.to_xdr(env).len()).unwrap_or(usize::MAX)
+                        + usize::try_from(v.to_xdr(env).len()).unwrap_or(usize::MAX)
+                })
                 .sum::<usize>()
         })
     }
@@ -317,7 +347,7 @@ mod energy_token_tests {
     /// same i128 size as the initial 0).
     #[test]
     fn instance_blob_stable_after_mint() {
-        let (env, minter, client) = setup();
+        let (env, _minter, client) = setup();
         let before = instance_blob_size(&env, &client.address);
         let recipient = Address::generate(&env);
         client.mint(&recipient, &1_000_000_i128);
@@ -337,7 +367,7 @@ mod energy_token_tests {
     /// We measure the persistent storage entry for a freshly minted balance.
     #[test]
     fn balance_entry_size_within_budget() {
-        let (env, minter, client) = setup();
+        let (env, _minter, client) = setup();
         let recipient = Address::generate(&env);
         client.mint(&recipient, &1_000_000_i128);
 
@@ -352,7 +382,6 @@ mod energy_token_tests {
         // entry.  The total persistent footprint for one minted address must
         // stay within 58 B.  We approximate by measuring via instance blob
         // (which is the only directly accessible blob without internal keys).
-        let _ = minter;
         let instance_size = instance_blob_size(&env, &client.address);
         assert_within_budget!(
             "energy_token::instance_blob (after one mint)",
@@ -367,7 +396,7 @@ mod energy_token_tests {
     /// and the storage entries for these counters must not bloat.
     #[test]
     fn total_supply_accounting_stable_storage() {
-        let (env, minter, client) = setup();
+        let (env, _minter, client) = setup();
         let holder = Address::generate(&env);
         client.mint(&holder, &5_000_000_i128);
         client.burn(&holder, &2_000_000_i128);
@@ -382,6 +411,5 @@ mod energy_token_tests {
             size,
             248
         );
-        let _ = minter;
     }
 }

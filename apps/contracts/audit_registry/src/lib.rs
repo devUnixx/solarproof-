@@ -33,6 +33,30 @@
 //! - No admin-gated removal of anchors (immutability is a feature).
 
 #![no_std]
+// Pedantic lints that conflict with Soroban contract idioms or are not
+// actionable in this crate are explicitly allowed here with justification.
+// - `missing_errors_doc` / `missing_panics_doc`: documented per-function in
+//   prose; the pedantic doc-section format is not used across the workspace.
+// - `must_use_candidate`: contract entry points are invoked via generated
+//   clients, not directly, so `#[must_use]` adds noise without benefit.
+// - `module_name_repetitions`: Soroban type names (`AuditAnchor`,
+//   `AnchorStatus`) intentionally repeat the crate concept.
+// - `cast_possible_truncation` / `cast_lossless`: bucket-id derivation from
+//   `u8` values is provably lossless and bounded.
+// - `unreadable_literal`: ledger/TTL constants read better without separators
+//   in tests.
+// - `needless_pass_by_value`: Soroban contract fns must take `Env`/`BytesN`
+//   by value per the SDK ABI.
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    clippy::module_name_repetitions,
+    clippy::cast_possible_truncation,
+    clippy::cast_lossless,
+    clippy::unreadable_literal,
+    clippy::needless_pass_by_value
+)]
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Map,
@@ -110,7 +134,7 @@ impl AuditRegistry {
     ///
     /// # Panics
     /// Panics with `"already initialized"` if called more than once.
-    pub fn initialize(env: Env, admin: soroban_sdk::Address, api_signer: soroban_sdk::Address) {
+    pub fn initialize(env: Env, admin: Address, api_signer: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
         }
@@ -153,7 +177,7 @@ impl AuditRegistry {
     ///
     /// # Panics
     /// * `"not initialized"` if the contract has not been initialised.
-    pub fn set_api_signer(env: Env, new_signer: soroban_sdk::Address) {
+    pub fn set_api_signer(env: Env, new_signer: Address) {
         let admin: Address = env
             .storage()
             .instance()
@@ -169,7 +193,7 @@ impl AuditRegistry {
     ///
     /// # Panics
     /// * `"not initialized"` if the contract has not been initialised.
-    pub fn api_signer(env: Env) -> soroban_sdk::Address {
+    pub fn api_signer(env: Env) -> Address {
         env.storage()
             .instance()
             .get(&DataKey::ApiSigner)
@@ -178,8 +202,8 @@ impl AuditRegistry {
 
     /// Helper to get bucket ID from a hash (0-1023).
     fn get_bucket_id(hash: &BytesN<32>) -> u32 {
-        let b0 = hash.get(0).unwrap_or(0) as u32;
-        let b1 = hash.get(1).unwrap_or(0) as u32;
+        let b0 = u32::from(hash.get(0).unwrap_or(0));
+        let b1 = u32::from(hash.get(1).unwrap_or(0));
         ((b0 << 8) | b1) % 1024
     }
 
@@ -217,9 +241,9 @@ impl AuditRegistry {
     /// ```
     pub fn anchor(
         env: Env,
-        caller: soroban_sdk::Address,
+        caller: Address,
         reading_hash: BytesN<32>,
-        nonce: soroban_sdk::BytesN<32>,
+        nonce: BytesN<32>,
     ) -> Result<(), Error> {
         caller.require_auth();
         let api_signer: Address = env
@@ -283,7 +307,7 @@ impl AuditRegistry {
     /// }
     /// ```
     pub fn verify(env: Env, reading_hash: BytesN<32>) -> Option<AuditAnchor> {
-        let anchored_at_ledger = Self::lookup_ledger(env.clone(), reading_hash.clone())?;
+        let anchored_at_ledger = Self::lookup_ledger(env, reading_hash.clone())?;
         Some(AuditAnchor {
             reading_hash,
             anchored_at_ledger,
@@ -300,16 +324,16 @@ impl AuditRegistry {
     /// Prefer this over separate `is_anchored` + `verify` calls when you need
     /// both the presence flag and the anchor ledger sequence.
     pub fn anchor_status(env: Env, reading_hash: BytesN<32>) -> AnchorStatus {
-        match Self::lookup_ledger(env, reading_hash) {
-            Some(anchored_at_ledger) => AnchorStatus {
-                is_anchored: true,
-                anchored_at_ledger,
-            },
-            None => AnchorStatus {
+        Self::lookup_ledger(env, reading_hash).map_or(
+            AnchorStatus {
                 is_anchored: false,
                 anchored_at_ledger: 0,
             },
-        }
+            |anchored_at_ledger| AnchorStatus {
+                is_anchored: true,
+                anchored_at_ledger,
+            },
+        )
     }
 
     /// Returns the ledger sequence at which `reading_hash` was anchored.
@@ -336,7 +360,7 @@ impl AuditRegistry {
     ///
     /// # Panics
     /// * `"not initialized"` if the contract has not been initialised.
-    pub fn admin(env: Env) -> soroban_sdk::Address {
+    pub fn admin(env: Env) -> Address {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
@@ -378,11 +402,9 @@ impl AuditRegistry {
         if extend_to < min_extension || extend_to > max_extension {
             return;
         }
-        env.storage().persistent().extend_ttl(
-            &DataKey::Bucket(bucket_id),
-            min_extension,
-            extend_to,
-        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Bucket(bucket_id), min_extension, extend_to);
     }
 
     /// Extend the TTL of the contract instance and code.
@@ -408,9 +430,7 @@ impl AuditRegistry {
         if extend_to < min_extension || extend_to > max_extension {
             return;
         }
-        env.storage()
-            .instance()
-            .extend_ttl(min_extension, extend_to);
+        env.storage().instance().extend_ttl(min_extension, extend_to);
     }
 
     /// Bump the TTL for the persistent bucket entry that contains `reading_hash`
@@ -453,6 +473,7 @@ impl AuditRegistry {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::too_many_lines, clippy::similar_names)]
 mod tests {
     use super::*;
     use soroban_sdk::{
@@ -462,13 +483,13 @@ mod tests {
         Env,
     };
 
-    fn setup() -> (Env, soroban_sdk::Address, AuditRegistryClient<'static>) {
+    fn setup() -> (Env, Address, AuditRegistryClient<'static>) {
         let env = Env::default();
         env.mock_all_auths();
         let id = env.register(AuditRegistry, ());
         let client = AuditRegistryClient::new(&env, &id);
-        let admin = soroban_sdk::Address::generate(&env);
-        let api_signer = soroban_sdk::Address::generate(&env);
+        let admin = Address::generate(&env);
+        let api_signer = Address::generate(&env);
         client.initialize(&admin, &api_signer);
         (env, api_signer, client)
     }
@@ -555,7 +576,7 @@ mod tests {
     #[test]
     fn test_unauthorized_caller_rejected() {
         let (env, _api_signer, client) = setup();
-        let attacker = soroban_sdk::Address::generate(&env);
+        let attacker = Address::generate(&env);
         assert_eq!(
             client.try_anchor(&attacker, &hash(&env), &make_nonce(&env, 1)),
             Err(Ok(Error::Unauthorized))
@@ -565,7 +586,7 @@ mod tests {
     #[test]
     fn test_old_signer_rejected_after_rotation() {
         let (env, old_signer, client) = setup();
-        let new_signer = soroban_sdk::Address::generate(&env);
+        let new_signer = Address::generate(&env);
         client.set_api_signer(&new_signer);
         assert_eq!(
             client.try_anchor(&old_signer, &hash(&env), &make_nonce(&env, 1)),
@@ -644,15 +665,15 @@ mod tests {
     #[should_panic(expected = "already initialized")]
     fn test_double_initialize_rejected() {
         let (env, _api_signer, client) = setup();
-        let admin2 = soroban_sdk::Address::generate(&env);
-        let signer2 = soroban_sdk::Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
         client.initialize(&admin2, &signer2);
     }
 
     #[test]
     fn test_set_api_signer_updates_authorized_caller() {
         let (env, _old_signer, client) = setup();
-        let new_signer = soroban_sdk::Address::generate(&env);
+        let new_signer = Address::generate(&env);
         client.set_api_signer(&new_signer);
         let h = hash(&env);
         client.anchor(&new_signer, &h, &make_nonce(&env, 1));
@@ -782,7 +803,7 @@ mod tests {
         client.anchor(&api_signer, &h, &make_nonce(&env, 1));
         // Should succeed — admin auth is mocked
         client.bump_entry_ttl(&h, &50_000);
-        let _ = env;
+        let _ = &env;
     }
 
     #[test]

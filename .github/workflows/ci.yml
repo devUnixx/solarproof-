@@ -176,7 +176,7 @@ jobs:
           TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
 
       - name: clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic
         working-directory: apps/contracts
         env:
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
