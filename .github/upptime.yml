@@ -24,12 +24,35 @@ sites:
       - 401
       - 422
     maxResponseTime: 5000
+  - name: Stellar Testnet RPC
+    url: https://soroban-testnet.stellar.org
+    method: POST
+    headers:
+      Content-Type: application/json
+    body: '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
+    expectedStatusCodes:
+      - 200
+    maxResponseTime: 10000
+    __dangerous__body_down_if_text_missing: '"status":"healthy"'
+    maxFailures: 2
+  - name: Stellar Mainnet RPC
+    url: https://mainnet.stellar.validationcloud.io/v1/$STELLAR_MAINNET_RPC_KEY
+    method: POST
+    headers:
+      Content-Type: application/json
+    body: '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
+    expectedStatusCodes:
+      - 200
+    maxResponseTime: 10000
+    __dangerous__body_down_if_text_missing: '"status":"healthy"'
+    maxFailures: 2
 
 status-website:
   cname: status.solarproof.app   # optional custom domain
   name: SolarProof Status
   logoUrl: https://solarproof.vercel.app/favicon.ico
   # Incident runbook: https://github.com/katecatherinaa/solarproof/blob/main/docs/runbooks/incident-response.md
+  # Stellar RPC outage runbook: https://github.com/katecatherinaa/solarproof/blob/main/docs/runbooks/stellar-rpc-outage.md
 
 # SLA target: 99.5% uptime. Alerts fire on any breach of this threshold.
 # Check interval: 1 minute (driven by the workflow schedule in .github/workflows/upptime.yml)

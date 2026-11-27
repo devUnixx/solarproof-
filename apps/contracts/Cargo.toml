@@ -9,6 +9,14 @@ members = [
 
 [workspace.dependencies]
 soroban-sdk = { version = "23.1.0", features = ["testutils"] }
+# Pin crypto-bigint to a patched release (RUSTSEC-2026-0387, fixed in >=0.7.6)
+crypto-bigint = "0.7.6"
+# Replace unmaintained `derivative` (RUSTSEC-2024-0388) with maintained `educe`
+educe = "0.6"
+# Replace unmaintained `paste` (RUSTSEC-2024-0436) with maintained `pastey`
+pastey = "0.1"
+# Bump `spin` off the yanked 0.9.8 release
+spin = "0.9.9"
 
 [profile.release]
 opt-level = "z"

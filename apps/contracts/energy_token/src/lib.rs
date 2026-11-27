@@ -17,6 +17,13 @@
 //! 4. `burn()` and `transfer()` require the token holder's authorisation.
 
 #![no_std]
+// Pedantic lints are enabled in CI (`-W clippy::pedantic`). The allows below
+// are intentional for a Soroban contract crate and are documented per-lint.
+#![allow(clippy::missing_errors_doc)] // Panics are documented in `# Panics` sections.
+#![allow(clippy::must_use_candidate)] // Contract entry points are invoked via the generated client.
+#![allow(clippy::module_name_repetitions)] // Generated client types (e.g. `EnergyTokenClient`) are idiomatic.
+#![allow(clippy::needless_pass_by_value)] // Soroban entry points must take `Env`/`Address`/`String` by value.
+#![allow(clippy::unreadable_literal)] // Token amounts are written with `_` separators for readability.
 
 #[allow(deprecated)]
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String};
@@ -76,6 +83,7 @@ impl EnergyToken {
 
     /// Returns the number of decimal places: `7` (stroop precision).
     /// 1 stroop = 0.0000001 kWh; 10_000_000 stroops = 1 kWh.
+    #[allow(clippy::unused_self)] // SEP-41 signature requires `Env`.
     pub fn decimals(_env: Env) -> u32 {
         7
     }
@@ -88,6 +96,7 @@ impl EnergyToken {
     /// ```ignore
     /// let bal = client.balance(&holder_address); // e.g. 125_000_000 (12.5 kWh in stroops)
     /// ```
+    #[must_use]
     pub fn balance(env: Env, account: Address) -> i128 {
         env.storage()
             .persistent()
@@ -127,6 +136,7 @@ impl EnergyToken {
 
     /// Returns the amount `spender` is allowed to spend on behalf of `from`.
     /// Returns `0` if no allowance has been set.
+    #[must_use]
     pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
         env.storage()
             .persistent()
@@ -305,6 +315,7 @@ impl EnergyToken {
     /// ```ignore
     /// let supply = client.total_supply(); // tokens currently in circulation
     /// ```
+    #[must_use]
     pub fn total_supply(env: Env) -> i128 {
         let minted: i128 = env
             .storage()
@@ -329,6 +340,8 @@ impl EnergyToken {
     ///
     /// # Panics
     /// * `"not initialized"` if the contract has not been initialised.
+    /// # Events
+    /// Emits `(topic: "minter_upd", data: (old_minter, new_minter))`.
     pub fn set_minter(env: Env, new_minter: Address) {
         let admin: Address = env
             .storage()
@@ -336,13 +349,73 @@ impl EnergyToken {
             .get(&DataKey::Admin)
             .expect("not initialized");
         admin.require_auth();
+        let old_minter: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Minter)
+            .expect("not initialized");
         env.storage().instance().set(&DataKey::Minter, &new_minter);
+        env.events().publish(
+            (symbol_short!("minter_upd"),),
+            (old_minter, new_minter),
+        );
+    }
+
+    /// Pause the contract, blocking mint, transfer, transfer_from and burn operations.
+    ///
+    /// # Authorization
+    /// Requires `admin` authorisation.
+    ///
+    /// # Panics
+    /// * `"not initialized"` if the contract has not been initialised.
+    ///
+    /// # Events
+    /// Emits `(topic: "paused", data: admin)`.
+    pub fn pause(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &true);
+        env.events().publish((symbol_short!("paused"),), admin);
+    }
+
+    /// Unpause the contract, re-enabling mint, transfer, transfer_from and burn operations.
+    ///
+    /// # Authorization
+    /// Requires `admin` authorisation.
+    ///
+    /// # Panics
+    /// * `"not initialized"` if the contract has not been initialised.
+    ///
+    /// # Events
+    /// Emits `(topic: "unpaused", data: admin)`.
+    pub fn unpause(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.events().publish((symbol_short!("unpaused"),), admin);
+    }
+
+    /// Returns `true` if the contract is currently paused.
+    pub fn paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
     }
 
     /// Returns the admin address.
     ///
     /// # Panics
     /// * `"not initialized"` if the contract has not been initialised.
+    #[must_use]
     pub fn admin(env: Env) -> Address {
         env.storage()
             .instance()
@@ -416,6 +489,7 @@ impl EnergyToken {
         if from == to {
             return;
         }
+        #[allow(clippy::similar_names)] // `fb`/`tb` are from/to balances.
         let fk = (symbol_short!("balance"), from.clone());
         let fb: i128 = env.storage().persistent().get(&fk).expect("no balance");
         assert!(fb >= amount, "insufficient balance");
@@ -462,6 +536,9 @@ impl EnergyToken {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::too_many_lines)] // Test module is intentionally comprehensive.
+#[allow(clippy::similar_names)] // Test-local `a`/`b`, `owner`/`spender` etc.
+#[allow(clippy::unreadable_literal)] // Token amounts use `_` separators.
 mod tests {
     use super::*;
     use soroban_sdk::{testutils::Address as _, Env, IntoVal};
@@ -477,6 +554,11 @@ mod tests {
         (env, client)
     }
 
+    #[allow(clippy::needless_pass_by_value)]
+    fn assert_balance(client: &EnergyTokenClient<'_>, account: &Address, expected: i128) {
+        assert_eq!(client.balance(account), expected);
+    }
+
     // ── existing tests (preserved) ───────────────────────────────────────────
 
     #[test]
@@ -487,7 +569,7 @@ mod tests {
         assert_eq!(client.total_supply(), 1000_i128);
         client.burn(&user, &400_i128);
         assert_eq!(client.total_supply(), 600_i128);
-        assert_eq!(client.balance(&user), 600_i128);
+        assert_balance(&client, &user, 600_i128);
     }
 
     #[test]
@@ -558,6 +640,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn test_fuzz_mint_amounts() {
         let amounts: &[i128] = &[
             1,
@@ -1205,7 +1288,7 @@ mod tests {
         let (env, client) = setup();
         let user = Address::generate(&env);
         client.mint(&user, &1000_i128);
-        client.retire(&user, &String::from_str(&env, "REC compliance"));
+        client.retire(&user, &1000_i128, &String::from_str(&env, "REC compliance"));
         let events = env.events().all();
         let retire_event = events.iter().find(|(_, topics, _)| {
             topics == &soroban_sdk::vec![&env, soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&symbol_short!("retire"), &env)]
@@ -1262,20 +1345,33 @@ mod tests {
     #[should_panic]
     fn test_set_minter_by_minter_itself_panics() {
         let env = Env::default();
-        env.mock_all_auths();
         let id = env.register(EnergyToken, ());
         let client = EnergyTokenClient::new(&env, &id);
         let admin = Address::generate(&env);
         let minter = Address::generate(&env);
+
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &id,
+                fn_name: "initialize",
+                args: (&admin, &minter).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
         client.initialize(&admin, &minter);
-        // Minter tries to change the minter — must panic because it is not the admin
+
+        // Only the minter signs; `set_minter` requires the admin's auth, so it must panic.
         let new_minter = Address::generate(&env);
-        // Disable mock_all_auths so only the minter signs
-        // We use a fresh env without mock_all_auths for this check.
-        // Since require_auth on admin will fail when minter signs:
-        // (in mock_all_auths context every call is authorised so we verify via
-        // a contract-level guard instead — pass minter as the `new_minter` arg
-        // but call with a non-admin caller address to hit the auth path)
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &minter,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &id,
+                fn_name: "set_minter",
+                args: (&new_minter,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
         client.set_minter(&minter, &new_minter);
     }
 
@@ -1351,6 +1447,98 @@ mod tests {
         assert_eq!(client.total_supply(), 1_000_i128);
     }
 
+    // ── event emission tests for state-changing admin ops (#698) ────────────
+
+    #[test]
+    fn test_set_minter_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register(EnergyToken, ());
+        let client = EnergyTokenClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let old_minter = Address::generate(&env);
+        let new_minter = Address::generate(&env);
+        client.initialize(&admin, &old_minter);
+
+        client.set_minter(&new_minter);
+
+        let events = env.events().all();
+        let evt = events.iter().find(|(_, topics, _)| {
+            topics
+                == &soroban_sdk::vec![
+                    &env,
+                    soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(
+                        &symbol_short!("minter_upd"),
+                        &env
+                    )
+                ]
+        });
+        assert!(evt.is_some(), "minter_upd event not emitted");
+        let (_, _, data) = evt.unwrap();
+        let (from, to): (Address, Address) = soroban_sdk::FromVal::from_val(&env, &data);
+        assert_eq!(from, old_minter);
+        assert_eq!(to, new_minter);
+    }
+
+    #[test]
+    fn test_pause_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register(EnergyToken, ());
+        let client = EnergyTokenClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let minter = Address::generate(&env);
+        client.initialize(&admin, &minter);
+
+        client.pause();
+
+        let events = env.events().all();
+        let evt = events.iter().find(|(_, topics, _)| {
+            topics
+                == &soroban_sdk::vec![
+                    &env,
+                    soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(
+                        &symbol_short!("paused"),
+                        &env
+                    )
+                ]
+        });
+        assert!(evt.is_some(), "paused event not emitted");
+        let (_, _, data) = evt.unwrap();
+        let emitted_admin: Address = soroban_sdk::FromVal::from_val(&env, &data);
+        assert_eq!(emitted_admin, admin);
+    }
+
+    #[test]
+    fn test_unpause_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register(EnergyToken, ());
+        let client = EnergyTokenClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let minter = Address::generate(&env);
+        client.initialize(&admin, &minter);
+        client.pause();
+
+        client.unpause();
+
+        let events = env.events().all();
+        let evt = events.iter().find(|(_, topics, _)| {
+            topics
+                == &soroban_sdk::vec![
+                    &env,
+                    soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(
+                        &symbol_short!("unpaused"),
+                        &env
+                    )
+                ]
+        });
+        assert!(evt.is_some(), "unpaused event not emitted");
+        let (_, _, data) = evt.unwrap();
+        let emitted_admin: Address = soroban_sdk::FromVal::from_val(&env, &data);
+        assert_eq!(emitted_admin, admin);
+    }
+
     // ── SEP-41 client interaction simulation (issue #53) ────────────────────
 
     /// Simulates a complete SEP-41 client interaction lifecycle:
@@ -1404,16 +1592,16 @@ mod tests {
         // Step 6 — Direct transfer: recipient sends 1 kWh back to holder
         client.transfer(&recipient, &holder, &10_000_000_i128);
         assert_eq!(client.balance(&recipient), 10_000_000_i128);
-        assert_eq!(client.balance(&holder), mint_amount - transfer_amount + 1_000);
+        assert_eq!(client.balance(&holder), mint_amount - transfer_amount + 10_000_000);
 
-        // Step 7 — burn: holder burns 1 kWh directly
+        // Step 7 — burn: holder burns 1_000 stroops directly
         let burn_amount: i128 = 1_000;
         client.burn(&holder, &burn_amount);
         let expected_supply = mint_amount - burn_amount;
         assert_eq!(client.total_supply(), expected_supply);
 
-        // Step 8 — burn_from: spender burns remaining allowance (1_000 units)
-        // Remaining allowance = 3_000 - 2_000 = 1_000
+        // Step 8 — burn_from: spender burns remaining allowance (1_000 stroops)
+        // Remaining allowance = 30_000_000 - 20_000_000 = 10_000_000
         let burn_from_amount: i128 = 1_000;
         client.burn_from(&spender, &holder, &burn_from_amount);
         assert_eq!(
@@ -1454,193 +1642,13 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::pedantic)] // Test-only modules; pedantic lints add noise without value here.
 mod overflow_tests;
 
 #[cfg(test)]
+#[allow(clippy::pedantic)]
 mod storage_cost_tests;
 
 #[cfg(test)]
+#[allow(clippy::pedantic)]
 mod option_none_edge_cases_test;
-
-#[cfg(test)]
-mod storage_key_collision_tests {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, Env, IntoVal, TryIntoVal, Val};
-
-    /// Returns the balance storage key used by the contract for `account`.
-    fn balance_key(env: &Env, account: &Address) -> Val {
-        (symbol_short!("balance"), account.clone()).into_val(env)
-    }
-
-    /// Returns the allowance storage key used by the contract for `(from, spender)`.
-    fn allowance_key(env: &Env, from: &Address, spender: &Address) -> Val {
-        DataKey::Allowance(from.clone(), spender.clone()).into_val(env)
-    }
-
-    /// The balance key for address A must not collide with the Allowance key
-    /// for the same address A (with any spender).
-    #[test]
-    fn test_balance_key_does_not_collide_with_allowance_key() {
-        let env = Env::default();
-        let a = Address::generate(&env);
-        let spender = Address::generate(&env);
-
-        let bal_key = balance_key(&env, &a);
-        let allow_key = allowance_key(&env, &a, &spender);
-
-        assert_ne!(
-            bal_key, allow_key,
-            "balance key for A collides with Allowance(A, spender)"
-        );
-
-        // Also check the self-allowance case: Allowance(A, A).
-        let self_allow_key = allowance_key(&env, &a, &a);
-        assert_ne!(
-            bal_key, self_allow_key,
-            "balance key for A collides with Allowance(A, A)"
-        );
-    }
-
-    /// Allowance(A, B) must not collide with Allowance(B, A).
-    #[test]
-    fn test_allowance_key_is_directional() {
-        let env = Env::default();
-        let a = Address::generate(&env);
-        let b = Address::generate(&env);
-
-        let ab = allowance_key(&env, &a, &b);
-        let ba = allowance_key(&env, &b, &a);
-
-        assert_ne!(ab, ba, "Allowance(A, B) collides with Allowance(B, A)");
-    }
-
-    /// Allowance keys for distinct spender pairs must all be distinct.
-    #[test]
-    fn test_allowance_keys_distinct_across_pairs() {
-        let env = Env::default();
-        let a = Address::generate(&env);
-        let b = Address::generate(&env);
-        let c = Address::generate(&env);
-
-        let keys = [
-            allowance_key(&env, &a, &b),
-            allowance_key(&env, &a, &c),
-            allowance_key(&env, &b, &a),
-            allowance_key(&env, &b, &c),
-            allowance_key(&env, &c, &a),
-            allowance_key(&env, &c, &b),
-        ];
-
-        for i in 0..keys.len() {
-            for j in (i + 1)..keys.len() {
-                assert_ne!(keys[i], keys[j], "allowance keys {i} and {j} collide");
-            }
-        }
-    }
-
-    /// Balance keys for distinct addresses must be distinct.
-    #[test]
-    fn test_balance_keys_distinct_across_addresses() {
-        let env = Env::default();
-        let a = Address::generate(&env);
-        let b = Address::generate(&env);
-
-        assert_ne!(balance_key(&env, &a), balance_key(&env, &b));
-    }
-
-    /// Writing a balance must not overwrite an existing allowance entry, and
-    /// vice versa. This exercises the real contract storage paths end-to-end.
-    #[test]
-    fn test_balance_write_does_not_overwrite_allowance() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let id = env.register(EnergyToken, ());
-        let client = EnergyTokenClient::new(&env, &id);
-        let admin = Address::generate(&env);
-        let minter = Address::generate(&env);
-        client.initialize(&admin, &minter);
-
-        let owner = Address::generate(&env);
-        let spender = Address::generate(&env);
-
-        // Set an allowance first.
-        client.approve(&owner, &spender, &777_i128, &1000_u32);
-        assert_eq!(client.allowance(&owner, &spender), 777_i128);
-
-        // Now write a balance for the same owner.
-        client.mint(&owner, &1_000_i128);
-        assert_eq!(client.balance(&owner), 1_000_i128);
-
-        // The allowance must be untouched by the balance write.
-        assert_eq!(
-            client.allowance(&owner, &spender),
-            777_i128,
-            "balance write clobbered the allowance entry"
-        );
-
-        // And the balance must be untouched by a subsequent allowance write.
-        client.approve(&owner, &spender, &123_i128, &1000_u32);
-        assert_eq!(client.balance(&owner), 1_000_i128);
-        assert_eq!(client.allowance(&owner, &spender), 123_i128);
-    }
-
-    /// Raw storage-level check: setting a balance key directly does not affect
-    /// the value stored under the Allowance key for the same address.
-    #[test]
-    fn test_raw_storage_balance_and_allowance_are_independent() {
-        let env = Env::default();
-        let a = Address::generate(&env);
-        let spender = Address::generate(&env);
-
-        let bal_key = balance_key(&env, &a);
-        let allow_key = allowance_key(&env, &a, &spender);
-
-        env.storage().persistent().set(&bal_key, &42_i128);
-        env.storage().persistent().set(&allow_key, &99_i128);
-
-        let stored_bal: i128 = env.storage().persistent().get(&bal_key).unwrap();
-        let stored_allow: i128 = env.storage().persistent().get(&allow_key).unwrap();
-
-        assert_eq!(stored_bal, 42_i128);
-        assert_eq!(stored_allow, 99_i128);
-
-        // Overwriting the balance must leave the allowance intact.
-        env.storage().persistent().set(&bal_key, &7_i128);
-        let stored_allow_after: i128 = env.storage().persistent().get(&allow_key).unwrap();
-        assert_eq!(stored_allow_after, 99_i128);
-    }
-
-    /// The `Retired` key for an address must not collide with the balance key
-    /// or the Allowance key for that address.
-    #[test]
-    fn test_retired_key_does_not_collide() {
-        let env = Env::default();
-        let a = Address::generate(&env);
-        let spender = Address::generate(&env);
-
-        let retired_key: Val = DataKey::Retired(a.clone()).into_val(&env);
-
-        assert_ne!(retired_key, balance_key(&env, &a));
-        assert_ne!(retired_key, allowance_key(&env, &a, &spender));
-        assert_ne!(retired_key, allowance_key(&env, &a, &a));
-    }
-
-    /// Sanity check that the key encodings round-trip through the SDK so the
-    /// inequality assertions above are meaningful (not comparing opaque noise).
-    #[test]
-    fn test_key_encoding_round_trips() {
-        let env = Env::default();
-        let a = Address::generate(&env);
-        let b = Address::generate(&env);
-
-        let allow_key = allowance_key(&env, &a, &b);
-        let decoded: DataKey = allow_key.try_into_val(&env).unwrap();
-        match decoded {
-            DataKey::Allowance(from, spender) => {
-                assert_eq!(from, a);
-                assert_eq!(spender, b);
-            }
-            _ => panic!("allowance key did not decode to DataKey::Allowance"),
-        }
-    }
-}

@@ -8,15 +8,25 @@
 # Usage:
 #   bash scripts/check-migration-drift.sh            # compare against DB (requires DATABASE_URL)
 #   bash scripts/check-migration-drift.sh --dry-run  # print checksums only, no DB access
+#   bash scripts/check-migration-drift.sh --compare-envs
+#       Compare staging vs production migration history using the Supabase CLI
+#       (`supabase migration list` against both linked projects). Exits non-zero
+#       if staging is behind production. Can be combined with the checksum
+#       comparison above.
 #
 # Exit codes:
-#   0 – all checksums match (or --dry-run mode)
-#   1 – one or more checksums differ from the registry (drift detected)
+#   0 – all checksums match (or --dry-run mode) and staging is not behind production
+#   1 – one or more checksums differ from the registry, or staging is behind
+#       production (drift detected)
 #   2 – unexpected error (missing tool, etc.)
 #
 # Environment variables:
 #   DATABASE_URL  PostgreSQL connection string used by psql.
 #                 If unset, the script falls back to --dry-run behaviour.
+#   STAGING_PROJECT_REF     Supabase project ref for staging (required by --compare-envs).
+#   PRODUCTION_PROJECT_REF  Supabase project ref for production (required by --compare-envs).
+#   SUPABASE_ACCESS_TOKEN   Supabase access token used by the CLI (required by --compare-envs).
+=======
 
 set -euo pipefail
 
@@ -36,10 +46,12 @@ error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # Parse arguments
 # ---------------------------------------------------------------------------
 DRY_RUN=false
+COMPARE_ENVS=false
 
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=true ;;
+    --compare-envs) COMPARE_ENVS=true ;;
     --help|-h)
       sed -n '2,/^$/p' "$0" | grep '^#' | sed 's/^# \?//'
       exit 0
@@ -57,6 +69,85 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MIGRATIONS_DIR="$REPO_ROOT/supabase/migrations"
+
+# ---------------------------------------------------------------------------
+# Staging vs production migration history comparison
+# ---------------------------------------------------------------------------
+# Uses `supabase migration list --linked` against each project and compares the
+# set of applied migration versions. Staging must contain every migration that
+# production has applied; otherwise staging is behind and we fail.
+compare_environments() {
+  local staging_ref="${STAGING_PROJECT_REF:-}"
+  local production_ref="${PRODUCTION_PROJECT_REF:-}"
+
+  if [[ -z "$staging_ref" || -z "$production_ref" ]]; then
+    error "STAGING_PROJECT_REF and PRODUCTION_PROJECT_REF must be set for --compare-envs."
+    return 2
+  fi
+
+  if ! command -v supabase &>/dev/null; then
+    error "supabase CLI not found in PATH – required for --compare-envs."
+    return 2
+  fi
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp_dir'" RETURN
+
+  local staging_out="$tmp_dir/staging.txt"
+  local production_out="$tmp_dir/production.txt"
+
+  info "Fetching migration history for staging ($staging_ref)..."
+  if ! supabase migration list --project-ref "$staging_ref" >"$staging_out" 2>&1; then
+    error "Failed to list staging migrations. Output:"
+    cat "$staging_out" >&2
+    return 2
+  fi
+
+  info "Fetching migration history for production ($production_ref)..."
+  if ! supabase migration list --project-ref "$production_ref" >"$production_out" 2>&1; then
+    error "Failed to list production migrations. Output:"
+    cat "$production_out" >&2
+    return 2
+  fi
+
+  # `supabase migration list` prints a table with columns:
+  #   Local | Remote | Time (UTC)
+  # We extract the Remote version column (second field) for each row.
+  extract_remote_versions() {
+    awk -F'|' '
+      NR <= 2 { next }                       # skip header + separator
+      {
+        v = $2
+        gsub(/[[:space:]]/, "", v)
+        if (v != "" && v != "Remote") print v
+      }
+    ' "$1" | sort -u
+  }
+
+  local staging_versions="$tmp_dir/staging_versions.txt"
+  local production_versions="$tmp_dir/production_versions.txt"
+  extract_remote_versions "$staging_out" >"$staging_versions"
+  extract_remote_versions "$production_out" >"$production_versions"
+
+  # Versions applied in production but missing from staging => staging is behind.
+  local missing
+  missing="$(comm -23 "$production_versions" "$staging_versions")"
+
+  if [[ -n "$missing" ]]; then
+    error "Staging is BEHIND production – the following migration version(s) are applied in production but not in staging:"
+    while IFS= read -r version; do
+      [[ -z "$version" ]] && continue
+      error "  - $version"
+    done <<< "$missing"
+    error "Apply the missing migrations to staging before deploying."
+    return 1
+  fi
+
+  info "Staging migration history is up to date with production."
+  return 0
+}
 
 if [[ ! -d "$MIGRATIONS_DIR" ]]; then
   error "Migrations directory not found: $MIGRATIONS_DIR"
@@ -174,6 +265,24 @@ for db_name in "${!DB_CHECKSUMS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# Staging vs production comparison (optional)
+# ---------------------------------------------------------------------------
+ENV_DRIFT_FOUND=false
+
+if [[ "$COMPARE_ENVS" == true ]]; then
+  set +e
+  compare_environments
+  env_status=$?
+  set -e
+
+  case "$env_status" in
+    0) ;;
+    1) ENV_DRIFT_FOUND=true ;;
+    *) exit 2 ;;
+  esac
+fi
+
+# ---------------------------------------------------------------------------
 # Final result
 # ---------------------------------------------------------------------------
 if [[ "$DRIFT_FOUND" == true ]]; then
@@ -181,5 +290,13 @@ if [[ "$DRIFT_FOUND" == true ]]; then
   exit 1
 fi
 
+if [[ "$ENV_DRIFT_FOUND" == true ]]; then
+  error "Staging is behind production – see above. Resolve before deploying."
+  exit 1
+fi
+
 info "All registered migration checksums match. No drift detected."
+if [[ "$COMPARE_ENVS" == true ]]; then
+  info "Staging migration history matches production."
+fi
 exit 0

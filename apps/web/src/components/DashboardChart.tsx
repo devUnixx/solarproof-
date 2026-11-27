@@ -167,8 +167,11 @@ function DashboardChartContent() {
   // docs/COLOR_CONTRAST_AUDIT.md). Okabe–Ito derived hues remain distinguishable
   // under deuteranopia, protanopia, and tritanopia simulations.
   const CHART_COLORS = {
-    energy: 'var(--chart-energy, #0072b2)',
-    energyPattern: 'var(--chart-energy-pattern, #0072b2)',
+    // #005a8f on white yields ~6.4:1 contrast (WCAG 2.1 AA compliant).
+    energy: 'var(--chart-energy, #005a8f)',
+    energyPattern: 'var(--chart-energy-pattern, #005a8f)',
+    // Axis/tick text color with >=4.5:1 contrast on white.
+    axis: 'var(--chart-axis, #4b5563)',
   }
 
   const legendItems = [
@@ -239,8 +242,8 @@ function DashboardChartContent() {
                     </pattern>
                   </defs>
                   <CartesianGrid stroke="#e5e7eb" strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: '#6b7280' }} />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#6b7280' }} />
+                  <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: CHART_COLORS.axis }} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: CHART_COLORS.axis }} />
                   <Tooltip wrapperStyle={{ borderRadius: 12, border: 'none', boxShadow: '0 10px 30px rgba(15, 23, 42, 0.08)' }} />
                   <Area
                     type="monotone"
@@ -266,6 +269,33 @@ function DashboardChartContent() {
                   />
                 </AreaChart>
               </ResponsiveContainer>
+            </div>
+
+            {/* Visually hidden data table fallback for screen readers */}
+            <div className="sr-only">
+              <table>
+                <caption>Energy readings — kilowatt-hours by time</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Time</th>
+                    <th scope="col">Energy (kWh)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.length === 0 ? (
+                    <tr>
+                      <td colSpan={2}>No readings loaded yet.</td>
+                    </tr>
+                  ) : (
+                    data.map((point, i) => (
+                      <tr key={i}>
+                        <th scope="row">{point.label}</th>
+                        <td>{point.energy.toFixed(3)}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
 
             {/* Keyboard nav live announcement */}

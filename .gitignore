@@ -16,11 +16,18 @@ coverage/
 *.flamegraph.html
 reports/
 
-# Playwright
+# Test snapshots
+**/__snapshots__/
+**/*.snap
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Editor and OS files
+.idea/
+.vscode/
+Thumbs.db
+
+# Playwright test artifacts
 test-results/
 playwright-report/
-
-# Playwright OS-specific visual snapshots (baselines without suffix stay tracked)
-apps/web/e2e/**/__screenshots__/**/*-darwin.png
-apps/web/e2e/**/__screenshots__/**/*-linux.png
-apps/web/e2e/**/__screenshots__/**/*-win32.png
