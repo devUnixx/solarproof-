@@ -1,10 +1,197 @@
-# I-REC Bridge Integration Guide — Cooperative Operator
+# I-REC Integration Guide
+
+This document has two parts:
+
+- **Part 1 — Certificate Lifecycle (Auditor Guide):** A plain-English explanation of how a physical kWh reading becomes an I-REC certificate. For non-technical auditors, certificate buyers, and regulatory reviewers.
+- **Part 2 — Bridge Integration Guide (Operator How-To):** Step-by-step instructions for cooperative operators to register devices and submit monthly batches to Evident.
+
+---
+
+# Part 1 — I-REC Certificate Lifecycle (Auditor Guide)
+
+> **Audience:** Non-technical auditors, certificate buyers, and regulatory reviewers who need to understand how a physical solar energy reading becomes a verifiable I-REC certificate on SolarProof. No coding knowledge is assumed.
+>
+> **Related technical docs:** [IREC_ENERGYWEB_INTEROP.md](./IREC_ENERGYWEB_INTEROP.md) (technical research)
+
+---
+
+## What This Document Covers
+
+This guide answers the question: *"How does a physical kilowatt-hour reading from a solar panel turn into a tradeable, retirable I-REC certificate — and how can I verify it?"*
+
+It covers:
+
+1. The plain-English lifecycle from panel to certificate.
+2. A sequence diagram showing every system involved.
+3. A glossary of key terms.
+4. Where and how independent verification is possible at each stage.
+
+---
+
+## The Lifecycle in Plain English
+
+### Stage 1 — A meter records energy generation
+
+A solar installation has a hardware meter attached to it. Every hour (or at a configured interval), the meter measures how much electricity the panels have generated and records it in kilowatt-hours (kWh).
+
+The meter does not simply write a number. It attaches a **cryptographic signature** to every reading — a mathematical fingerprint unique to that reading and that meter. This signature makes it impossible to alter the reading without detection, even by the platform operator.
+
+### Stage 2 — The reading is submitted to SolarProof
+
+The meter (or a gateway device) sends the signed reading to the SolarProof API over an encrypted connection. Before the platform accepts the reading, it checks:
+
+- The signature is valid for the meter's registered key.
+- The meter is active and has not been revoked.
+- The reading is not a duplicate of one already received.
+
+If any check fails, the reading is rejected and an error is logged. Only readings that pass all checks are stored.
+
+### Stage 3 — The reading is anchored on the Stellar blockchain
+
+Accepted readings are queued for **anchoring**. Anchoring means computing a **reading hash** (a short, unique fingerprint of the reading's data) and writing that hash to the Stellar blockchain inside a smart contract transaction.
+
+Once anchored, the hash is permanent and public. Anyone can retrieve the Stellar transaction and confirm that the hash matches the reading stored in SolarProof's database. The reading's content cannot be altered retroactively without the hash on-chain changing — which is impossible.
+
+This step creates the immutable audit trail that underpins all subsequent certificate claims.
+
+### Stage 4 — An energy token (certificate) is minted on Stellar
+
+After anchoring succeeds, the platform mints an **energy token** on Stellar — a SEP-41 standard token representing the kWh amount of that reading. The token is issued to the cooperative's Stellar account.
+
+Minting is recorded with a second Stellar transaction hash. Both transaction hashes (anchor and mint) are stored on the certificate record and displayed publicly on the `/verify` page.
+
+### Stage 5 — The batch is submitted to the I-REC registry
+
+At the end of each calendar month, the cooperative submits a **batch** of verified readings to the **Evident registry** via the I-REC bridge. The bridge:
+
+1. Adds up all verified, anchored readings for the period to produce a total MWh figure.
+2. Constructs a Measurement, Reporting and Verification (MRV) document link — a URL pointing to the SolarProof public verification page covering all readings in the batch.
+3. Submits the total MWh and the MRV link to Evident on behalf of the cooperative.
+
+Evident is an accredited I-REC registry operator. It records the submission and passes it to an accredited **I-REC Issuer** in the cooperative's country for review.
+
+### Stage 6 — The I-REC Issuer mints the official certificate
+
+The accredited I-REC Issuer reviews the MRV document and, if satisfied, mints one or more **I-REC(E) certificates** in the Evident registry. Each certificate represents 1 MWh of verified solar generation.
+
+The Evident registry assigns a unique I-REC certificate identifier (e.g. `IREC-GB-2026-09-001`) to each certificate. SolarProof stores this identifier on the corresponding certificate record and displays it on the public verification page.
+
+### Stage 7 — The certificate can be transferred or retired
+
+The certificate holder (the cooperative or a buyer) can:
+
+- **Transfer** the certificate to another party's Stellar address (peer-to-peer sale or donation).
+- **Retire** (redeem) the certificate to claim its renewable energy attribute. Retirement is permanent and recorded both on-chain and in the Evident registry.
+
+A retired certificate cannot be transferred or retired again. This prevents double-counting — the central problem in renewable energy certificate markets.
+
+---
+
+## Sequence Diagram
+
+The diagram below shows the full lifecycle with all systems involved and the data passed at each step.
+
+```mermaid
+sequenceDiagram
+    participant Meter as Solar Meter
+    participant API as SolarProof API
+    participant DB as Supabase Database
+    participant Queue as Redis Job Queue
+    participant Stellar as Stellar Network<br/>(Soroban smart contract)
+    participant Bridge as I-REC Bridge
+    participant Evident as Evident Registry
+    participant Issuer as Accredited I-REC Issuer
+
+    Note over Meter,API: Stage 1–2: Reading capture and submission
+    Meter->>API: POST /api/v1/readings<br/>{kwh, timestamp, meter_id,<br/>reading_hash, signature_hex}
+    API->>API: Verify Ed25519 signature<br/>Check meter is active<br/>Check for duplicates
+    API->>DB: INSERT into readings<br/>{reading_hash, kwh, timestamp}
+    API->>Queue: Enqueue anchor_and_mint job<br/>{reading_id, reading_hash, kwh}
+    API-->>Meter: 202 Accepted {job_id}
+
+    Note over Queue,Stellar: Stage 3: Anchoring on Stellar
+    Queue->>Stellar: anchor_reading(reading_hash)<br/>Soroban contract call
+    Stellar-->>Queue: anchor_tx_hash
+    Queue->>DB: UPDATE readings<br/>{anchored=true, anchor_tx_hash}
+
+    Note over Queue,Stellar: Stage 4: Token minting on Stellar
+    Queue->>Stellar: mint_certificates(recipient, kwh)<br/>SEP-41 token issuance
+    Stellar-->>Queue: mint_tx_hash
+    Queue->>DB: INSERT into certificates<br/>{reading_hash, anchor_tx_hash, mint_tx_hash, kwh}
+    Queue->>DB: UPDATE readings<br/>{minted=true, mint_tx_hash}
+
+    Note over Bridge,Issuer: Stage 5–6: I-REC batch submission and issuance
+    Bridge->>DB: Aggregate verified readings<br/>for device + calendar month
+    Bridge->>Evident: POST issuance request<br/>{device_id, total_mwh,<br/>mrv_document_url}
+    Evident->>Issuer: Forward for review
+    Issuer-->>Evident: Approve and mint I-REC(E) certificates
+    Evident-->>Bridge: {irec_certificate_ids, issued_at}
+    Bridge->>DB: UPDATE certificates<br/>{irec_certificate_id}
+
+    Note over API,DB: Stage 7: Transfer or retirement
+    API->>Stellar: transfer_certificate(to_address)<br/>or retire_certificate()
+    Stellar-->>API: transfer_tx_hash / retire_tx_hash
+    API->>DB: UPDATE certificates<br/>{retired=true, retired_at, retired_by}
+```
+
+---
+
+## How to Verify a Certificate Independently
+
+Any party can verify a SolarProof certificate without trusting the platform:
+
+1. **Retrieve the certificate details** from `https://solarproof.vercel.app/verify?id=<certificate-id>`. This page shows the reading hash, anchor transaction hash, mint transaction hash, and I-REC certificate ID.
+
+2. **Check the anchor transaction** on the public Stellar blockchain. Paste the `anchor_tx_hash` into a Stellar block explorer (e.g. [Stellar Expert](https://stellar.expert)) and confirm the transaction data contains the `reading_hash`.
+
+3. **Check the mint transaction** using the `mint_tx_hash` on Stellar Expert. Confirm the SEP-41 token issuance matches the kWh amount on the certificate.
+
+4. **Cross-check the I-REC certificate** using the `irec_certificate_id` on the [I-TRACK Evident portal](https://www.trackingstandard.org). Confirm the certificate has not been double-redeemed.
+
+---
+
+## Glossary
+
+| Term | Plain-English definition |
+|---|---|
+| **reading_hash** | A short, unique fingerprint (SHA-256) computed from a meter reading's data: meter ID, kWh value, and timestamp. If any part of the reading changes, the hash changes. This fingerprint is what gets written to the Stellar blockchain. |
+| **Ed25519 signature** | A cryptographic seal attached to each reading by the meter's private key. Only the meter that generated the reading can produce this seal. It proves the reading came from a specific, registered device and was not altered in transit. |
+| **anchor** | The act of writing a reading's hash to the Stellar blockchain inside a smart contract. Once anchored, the hash is permanent and public — it cannot be altered or deleted. Anchoring creates the tamper-evident audit trail. |
+| **anchor_tx_hash** | The unique identifier of the Stellar blockchain transaction that wrote the reading hash on-chain. Used by auditors to independently verify the anchor on a public block explorer. |
+| **mint** | The creation of an energy token on the Stellar blockchain representing the kWh amount of a verified, anchored reading. Minting issues the digital certificate to the cooperative's Stellar account. |
+| **mint_tx_hash** | The unique identifier of the Stellar blockchain transaction that created (minted) the energy token. Used by auditors to verify the token issuance on a public block explorer. |
+| **SEP-41** | The Stellar Ecosystem Proposal defining the standard interface for fungible tokens on Stellar. SolarProof energy tokens conform to SEP-41, making them compatible with standard Stellar wallets and exchanges. |
+| **retirement** | The permanent redemption of a certificate to claim its renewable energy attribute. A retired certificate cannot be transferred or retired again, preventing double-counting. |
+| **MRV document** | Measurement, Reporting and Verification document. The I-REC standard requires an MRV document as evidence for each issuance request. SolarProof's MRV document is the public `/verify` page covering all readings in a batch. |
+| **Evident** | The registry platform operated by the I-TRACK Foundation for I-REC(E) certificates. Cooperatives register devices and submit issuance requests through Evident. |
+| **I-REC(E)** | International Renewable Energy Certificate (Electricity). A market-standard certificate representing 1 MWh of verified electricity generation from a renewable source, issued by an accredited I-REC Issuer through the Evident registry. |
+| **accredited I-REC Issuer** | A body approved by the I-TRACK Foundation to mint I-REC(E) certificates in a specific country. SolarProof cannot mint I-RECs directly; the Issuer reviews the MRV document and mints certificates on the cooperative's behalf. |
+| **irec_certificate_id** | The unique identifier assigned by the Evident registry to each I-REC(E) certificate (e.g. `IREC-GB-2026-09-001`). Used to look up the certificate on the I-TRACK Evident portal for independent verification. |
+| **Soroban** | The smart contract platform built into the Stellar network. SolarProof's `audit_registry` and `energy_token` contracts run on Soroban, making contract execution auditable and deterministic. |
+| **cooperative** | An organisation (cooperative, community energy group, or similar) that operates one or more solar installations registered on SolarProof. Each cooperative has an admin Stellar address and manages its own meters and certificates. |
+
+---
+
+## Notes for Auditors
+
+- **Non-technical review note.** This document was written for non-technical stakeholders. For the full technical specification — including API schemas, smart contract interfaces, and Ed25519 protocol details — see [ED25519_PROTOCOL.md](./ED25519_PROTOCOL.md), [CONTRACT_INTERFACE_DOCS.md](./CONTRACT_INTERFACE_DOCS.md), and [API.md](./API.md).
+- **Blockchain immutability caveat.** While the Stellar blockchain provides strong tamper-evidence, the security of the full chain depends on the meter's private key remaining secret. If a meter's key is compromised and the meter is not promptly revoked, an attacker could submit fraudulent readings. The meter key revocation procedure is documented in [docs/runbooks/meter-key-rotation.md](./runbooks/meter-key-rotation.md).
+- **I-REC Issuer independence.** The accredited I-REC Issuer is an independent third party approved by the I-TRACK Foundation. SolarProof does not control or influence the Issuer's review process. The Issuer reviews the MRV document independently before minting any I-REC certificates.
+
 
 > **Audience:** Cooperative operators who have deployed the SolarProof I-REC bridge and want to register their devices, submit monthly batches to Evident, and diagnose common API errors.  
 > **Background research:** [IREC_ENERGYWEB_INTEROP.md](./IREC_ENERGYWEB_INTEROP.md)  
 > **Status:** This guide tracks the bridge implementation. Review it against the running bridge before onboarding new cooperatives.
 
 ---
+
+---
+
+# Part 2 — I-REC Bridge Integration Guide (Cooperative Operator)
+
+> **Audience:** Cooperative operators who have deployed the SolarProof I-REC bridge and want to register their devices, submit monthly batches to Evident, and diagnose common API errors.  
+> **Background research:** [IREC_ENERGYWEB_INTEROP.md](./IREC_ENERGYWEB_INTEROP.md)  
+> **Status:** This guide tracks the bridge implementation. Review it against the running bridge before onboarding new cooperatives.
 
 ## Overview
 

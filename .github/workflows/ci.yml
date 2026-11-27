@@ -36,6 +36,19 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: echo "store_path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.store_path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
       - run: pnpm install --frozen-lockfile
 
       - name: Restore Next.js build cache
@@ -70,9 +83,17 @@ jobs:
         run: node scripts/check-sri.mjs
       - run: pnpm test
         working-directory: apps/web
+      - name: Audit log chain integrity test
+        run: pnpm vitest run tests/audit-log-chain.test.ts --reporter=verbose
+        working-directory: apps/web
       - name: Run tests with coverage
         run: pnpm vitest run --coverage
         working-directory: apps/web
+      - name: OpenAPI contract tests (schema drift)
+        run: pnpm --filter @solarproof/web exec vitest run src/__tests__/contract
+        env:
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
@@ -109,6 +130,17 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: echo "store_path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.store_path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @solarproof/web exec playwright install chromium
       - run: pnpm e2e
@@ -149,6 +181,17 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: echo "store_path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.store_path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
       - run: pnpm install --frozen-lockfile
       - run: npx license-checker --onlyAllow "$(node -e "const c=require('./.license-checker.json');console.log(c.allowedLicenses.join(';'))")" --excludePrivatePackages
 
@@ -181,7 +224,7 @@ jobs:
           TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
 
       - name: clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic
         working-directory: apps/contracts
         env:
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -282,6 +325,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -290,6 +334,7 @@ jobs:
           docker build \
             --file apps/web/Dockerfile \
             --tag solarproof/web:${{ github.sha }} \
+            --tag ghcr.io/${{ github.repository_owner }}/solarproof/web:${{ github.sha }} \
             .
 
       - name: Run Trivy vulnerability scanner
@@ -315,6 +360,40 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image to GHCR (sha + latest)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/solarproof/web
+          docker tag solarproof/web:${{ github.sha }} "$IMAGE:${{ github.sha }}"
+          docker tag solarproof/web:${{ github.sha }} "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+      - name: Push image to GHCR (semantic version on release)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/solarproof/web
+          docker tag solarproof/web:${{ github.sha }} "$IMAGE:${GITHUB_REF_NAME}"
+          docker push "$IMAGE:${GITHUB_REF_NAME}"
+
+      - name: Prune old GHCR image versions (keep last 20)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: solarproof/web
+          package-type: container
+          min-versions-to-keep: 20
+          delete-only-untagged-versions: false
+        continue-on-error: true
 
   # Closes #62 — Stellar sandbox + contract integration tests in CI.
   # Both the sandbox and the tests run in the same job so the Docker
@@ -350,6 +429,19 @@ jobs:
 
       - name: Install Stellar CLI
         run: cargo install --locked stellar-cli --version 22.0.1
+
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: echo "store_path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.store_path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
 
       - run: pnpm install --frozen-lockfile
 

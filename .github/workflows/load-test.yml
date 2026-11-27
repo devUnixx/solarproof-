@@ -12,12 +12,13 @@ on:
         required: false
         default: ''
       scenario:
-        description: 'Test scenario: baseline (100 VUs, p95 < 500ms) or breakpoint (ramp to breaking point)'
+        description: 'Test scenario: baseline (100 VUs, p95 < 500ms), regression (100 VUs, 30s, p95 < 300ms) or breakpoint (ramp to breaking point)'
         required: false
         default: 'baseline'
         type: choice
         options:
           - baseline
+          - regression
           - breakpoint
   schedule:
     # Nightly run against staging for automated P95 regression detection
@@ -30,13 +31,16 @@ env:
   P95_BASELINE_MS: 2000
   # Regression threshold: fail if P95 exceeds baseline by more than 20%
   P95_REGRESSION_PERCENT: 20
+  # Focused regression scenario thresholds (POST /api/readings, 100 VUs, 30s)
+  REGRESSION_P95_MAX_MS: 300
+  REGRESSION_ERROR_RATE_MAX_PERCENT: 0.1
 
 jobs:
   verify-rate-limit:
     name: Verify rate limit enforcement (/api/verify)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install k6
         run: |
@@ -110,18 +114,116 @@ jobs:
 
       - name: Upload verify rate-limit results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: verify-rate-limit-results-${{ github.run_id }}
           path: verify-rate-limit-summary.json
           if-no-files-found: ignore
           retention-days: 30
 
-  load-test:
-    name: k6 load test (${{ github.event.inputs.scenario || 'baseline' }})
+  certificate-retirement:
+    name: k6 concurrent certificate retirement
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring \
+            --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 \
+            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update && sudo apt-get install -y k6
+
+      - name: Run concurrent retirement test
+        id: run_retirement_test
+        run: |
+          # 50 VUs attempt to retire the same certificate simultaneously
+          k6 run tests/load/certificate-retirement.js \
+            -e API_URL=${{ github.event.inputs.api_url || 'https://solarproof-staging.vercel.app' }} \
+            --summary-export=certificate-retirement-summary.json || true
+
+      - name: Enforce retirement thresholds
+        id: enforce_retirement
+        run: |
+          RESULT=$(python3 -c "
+          import json, sys
+          try:
+              with open('certificate-retirement-summary.json') as f:
+                  data = json.load(f)
+              metrics = data.get('metrics', {})
+              successes = metrics.get('retirement_success_count', {}).get('count')
+              server_errors = metrics.get('retirement_server_error_count', {}).get('count')
+              if successes is None or server_errors is None:
+                  print('N/A')
+                  sys.exit(0)
+              print(f'{int(successes)} {int(server_errors)}')
+          except Exception as e:
+              print(f'ERROR: {e}', file=sys.stderr)
+              print('N/A')
+          " 2>&1)
+
+          if [ "$RESULT" = "N/A" ] || [ -z "$RESULT" ]; then
+            echo "::error::Could not parse retirement results from k6 summary — cannot confirm concurrency safety"
+            exit 1
+          fi
+
+          SUCCESSES=$(echo "$RESULT" | awk '{print $1}')
+          SERVER_ERRORS=$(echo "$RESULT" | awk '{print $2}')
+
+          echo "successes=${SUCCESSES}" >> "$GITHUB_OUTPUT"
+          echo "server_errors=${SERVER_ERRORS}" >> "$GITHUB_OUTPUT"
+
+          if [ "$SERVER_ERRORS" -ne 0 ]; then
+            echo "::error::Observed ${SERVER_ERRORS} 5xx responses during concurrent retirement — race condition suspected"
+            exit 1
+          fi
+
+          if [ "$SUCCESSES" -ne 1 ]; then
+            echo "::error::Expected exactly 1 successful retirement, observed ${SUCCESSES}"
+            exit 1
+          fi
+
+          echo "✅ Concurrent retirement safe: exactly 1 success, 0 server errors"
+
+      - name: Add Certificate Retirement Summary
+        if: always()
+        run: |
+          SUCCESSES="${{ steps.enforce_retirement.outputs.successes }}"
+          SERVER_ERRORS="${{ steps.enforce_retirement.outputs.server_errors }}"
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## Concurrent Certificate Retirement Test
+
+          | Metric | Value |
+          |---|---|
+          | Target | ${{ github.event.inputs.api_url || 'https://solarproof-staging.vercel.app' }} |
+          | Concurrent VUs | 50 |
+          | Successful retirements (expected 1) | ${SUCCESSES:-N/A} |
+          | Server errors (expected 0) | ${SERVER_ERRORS:-N/A} |
+
+          > Concurrent retirement of the same certificate must yield exactly one success; all other requests must return 409 (or 200 idempotent). No 5xx responses are permitted.
+          EOF
+
+      - name: Upload certificate retirement results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: certificate-retirement-results-${{ github.run_id }}
+          path: certificate-retirement-summary.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  load-test:
+    name: k6 load test (${{ github.event.inputs.scenario || 'baseline' }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install k6
         run: |
@@ -143,6 +245,101 @@ jobs:
             -e METER_ID=${{ github.event.inputs.meter_id || '00000000-0000-0000-0000-000000000001' }} \
             -e SCENARIO=${{ github.event.inputs.scenario || 'baseline' }} \
             --summary-export=k6-summary.json || true
+
+      - name: Parse k6 summary (p50/p95/p99 + error rate)
+        id: parse_summary
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const out = process.env.GITHUB_OUTPUT;
+          const append = (k, v) => fs.appendFileSync(out, `${k}=${v}\n`);
+          let p50 = 'N/A', p95 = 'N/A', p99 = 'N/A', errRate = 'N/A';
+          try {
+            const data = JSON.parse(fs.readFileSync('k6-summary.json', 'utf8'));
+            const metrics = data.metrics || {};
+            const dur = metrics.reading_duration_ms || metrics.http_req_duration || {};
+            const fmt = (v) => (v === undefined || v === null) ? 'N/A' : Number(v).toFixed(0);
+            p50 = fmt(dur['p(50)']);
+            p95 = fmt(dur['p(95)']);
+            p99 = fmt(dur['p(99)']);
+            const failed = metrics.http_req_failed || {};
+            if (failed.rate !== undefined && failed.rate !== null) {
+              errRate = (Number(failed.rate) * 100).toFixed(2);
+            } else if (failed.value !== undefined && failed.value !== null) {
+              errRate = (Number(failed.value) * 100).toFixed(2);
+            }
+          } catch (e) {
+            console.error(`ERROR parsing k6 summary: ${e.message}`);
+          }
+          append('p50_ms', p50);
+          append('p95_ms', p95);
+          append('p99_ms', p99);
+          append('error_rate_pct', errRate);
+          console.log(`p50=${p50}ms p95=${p95}ms p99=${p99}ms error_rate=${errRate}%`);
+          NODE
+
+      - name: Enforce performance thresholds
+        id: enforce_perf
+        run: |
+          P95="${{ steps.parse_summary.outputs.p95_ms }}"
+          ERR="${{ steps.parse_summary.outputs.error_rate_pct }}"
+          FAILED=0
+
+          if [ "$ERR" != "N/A" ] && [ -n "$ERR" ]; then
+            if python3 -c "import sys; sys.exit(0 if float('$ERR') > 1.0 else 1)"; then
+              echo "::error::Error rate ${ERR}% exceeds 1% threshold"
+              FAILED=1
+            else
+              echo "✅ Error rate ${ERR}% within 1% threshold"
+            fi
+          else
+            echo "::warning::Could not determine error rate — skipping error-rate threshold check"
+          fi
+
+          if [ "$P95" != "N/A" ] && [ -n "$P95" ]; then
+            if [ "$P95" -gt 500 ]; then
+              echo "::error::P95 latency ${P95}ms exceeds 500ms threshold"
+              FAILED=1
+            else
+              echo "✅ P95 latency ${P95}ms within 500ms threshold"
+            fi
+          else
+            echo "::warning::Could not determine P95 latency — skipping latency threshold check"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Post PR comment with load-test summary
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const p50 = '${{ steps.parse_summary.outputs.p50_ms }}';
+            const p95 = '${{ steps.parse_summary.outputs.p95_ms }}';
+            const p99 = '${{ steps.parse_summary.outputs.p99_ms }}';
+            const errRate = '${{ steps.parse_summary.outputs.error_rate_pct }}';
+            const scenario = '${{ github.event.inputs.scenario || 'baseline' }}';
+            const body = [
+              '## k6 Load Test Summary',
+              '',
+              '| Metric | Value | Threshold |',
+              '|---|---|---|',
+              `| Scenario | ${scenario} | — |`,
+              `| p50 latency | ${p50} ms | — |`,
+              `| p95 latency | ${p95} ms | ≤ 500 ms |`,
+              `| p99 latency | ${p99} ms | — |`,
+              `| Error rate | ${errRate}% | ≤ 1% |`,
+              '',
+              '> Baseline documented in [docs/PERFORMANCE_BASELINE.md](../blob/main/docs/PERFORMANCE_BASELINE.md).',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
 
       - name: P95 Regression Check
         id: regression_check
@@ -219,11 +416,152 @@ jobs:
 
       - name: Upload k6 results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: k6-results-${{ github.event.inputs.scenario || 'baseline' }}-${{ github.run_id }}
           path: |
             k6-summary.json
+            '*.json'
+          if-no-files-found: ignore
+          retention-days: 30
+
+  regression-test:
+    name: k6 regression test (POST /api/readings, 100 VUs, 30s)
+    runs-on: ubuntu-latest
+    # Runs on the nightly schedule and on manual dispatch (any scenario) so the
+    # focused hot-path regression check always has a result to compare against.
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring \
+            --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 \
+            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update && sudo apt-get install -y k6
+
+      - name: Run regression scenario
+        id: run_regression
+        run: |
+          # k6 thresholds (p95 < 300ms, error rate < 0.1%) make k6 exit non-zero
+          # on violation; capture the exit code so we can still parse/upload the
+          # summary and report a precise failure below.
+          set +e
+          k6 run tests/load/readings.js \
+            -e API_URL=${{ github.event.inputs.api_url || 'https://solarproof-staging.vercel.app' }} \
+            -e METER_ID=${{ github.event.inputs.meter_id || '00000000-0000-0000-0000-000000000001' }} \
+            -e SCENARIO=regression \
+            --summary-export=regression-summary.json
+          K6_EXIT=$?
+          set -e
+          echo "k6_exit_code=${K6_EXIT}" >> "$GITHUB_OUTPUT"
+          echo "k6 exited with code ${K6_EXIT}"
+
+      - name: Enforce regression thresholds
+        id: enforce_regression
+        run: |
+          P95=$(python3 -c "
+          import json, sys
+          try:
+              with open('regression-summary.json') as f:
+                  data = json.load(f)
+              metrics = data.get('metrics', {})
+              p95 = (
+                  metrics.get('reading_duration_ms', {}).get('p(95)')
+                  or metrics.get('http_req_duration', {}).get('p(95)')
+              )
+              if p95 is None:
+                  print('N/A')
+                  sys.exit(0)
+              print(f'{p95:.0f}')
+          except Exception as e:
+              print(f'ERROR: {e}', file=sys.stderr)
+              print('N/A')
+          " 2>&1)
+
+          ERROR_RATE=$(python3 -c "
+          import json, sys
+          try:
+              with open('regression-summary.json') as f:
+                  data = json.load(f)
+              metrics = data.get('metrics', {})
+              rate = metrics.get('http_req_failed', {}).get('value')
+              if rate is None:
+                  print('N/A')
+                  sys.exit(0)
+              print(f'{rate * 100:.4f}')
+          except Exception as e:
+              print(f'ERROR: {e}', file=sys.stderr)
+              print('N/A')
+          " 2>&1)
+
+          echo "p95_ms=${P95}" >> "$GITHUB_OUTPUT"
+          echo "error_rate_percent=${ERROR_RATE}" >> "$GITHUB_OUTPUT"
+
+          MAX_P95=${{ env.REGRESSION_P95_MAX_MS }}
+          MAX_ERR=${{ env.REGRESSION_ERROR_RATE_MAX_PERCENT }}
+          FAILED=0
+
+          if [ "$P95" = "N/A" ] || [ "$P95" = "" ]; then
+            echo "::error::Could not parse P95 from regression summary — cannot confirm p95 < ${MAX_P95}ms"
+            FAILED=1
+          elif [ "$P95" -ge "$MAX_P95" ]; then
+            echo "::error::P95 regression: ${P95}ms >= ${MAX_P95}ms threshold"
+            FAILED=1
+          else
+            echo "✅ P95 within threshold: ${P95}ms < ${MAX_P95}ms"
+          fi
+
+          if [ "$ERROR_RATE" = "N/A" ] || [ "$ERROR_RATE" = "" ]; then
+            echo "::error::Could not parse error rate from regression summary — cannot confirm error rate < ${MAX_ERR}%"
+            FAILED=1
+          elif python3 -c "import sys; sys.exit(0 if float('$ERROR_RATE') >= float('$MAX_ERR') else 1)"; then
+            echo "::error::Error rate regression: ${ERROR_RATE}% >= ${MAX_ERR}% threshold"
+            FAILED=1
+          else
+            echo "✅ Error rate within threshold: ${ERROR_RATE}% < ${MAX_ERR}%"
+          fi
+
+          if [ "${{ steps.run_regression.outputs.k6_exit_code }}" != "0" ]; then
+            echo "::error::k6 reported threshold violations (exit code ${{ steps.run_regression.outputs.k6_exit_code }})"
+            FAILED=1
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Add Regression Summary
+        if: always()
+        run: |
+          P95="${{ steps.enforce_regression.outputs.p95_ms }}"
+          ERROR_RATE="${{ steps.enforce_regression.outputs.error_rate_percent }}"
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## k6 Regression Test — POST /api/readings
+
+          | Metric | Value | Threshold |
+          |---|---|---|
+          | Target | ${{ github.event.inputs.api_url || 'https://solarproof-staging.vercel.app' }} | — |
+          | Virtual users | 100 (30 s continuous) | — |
+          | P95 Latency | ${P95:-N/A} ms | < ${{ env.REGRESSION_P95_MAX_MS }} ms |
+          | Error Rate | ${ERROR_RATE:-N/A} % | < ${{ env.REGRESSION_ERROR_RATE_MAX_PERCENT }} % |
+          | k6 exit code | ${{ steps.run_regression.outputs.k6_exit_code }} | 0 |
+
+          > Baseline documented in [docs/PERFORMANCE_BASELINE.md](../../docs/PERFORMANCE_BASELINE.md).
+          EOF
+
+      - name: Upload regression results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-regression-results-${{ github.run_id }}
+          path: |
+            regression-summary.json
             '*.json'
           if-no-files-found: ignore
           retention-days: 30

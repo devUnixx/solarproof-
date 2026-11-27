@@ -121,7 +121,48 @@ jobs:
             echo "| Rollback coverage | ✅ All migrations have rollback scripts |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      # ── 4. Verify staging workflow uses correct branch ────────────────────
+      # ── 4. Compare staging vs production migration history ────────────────
+      - name: Compare staging and production schema
+        env:
+          STAGING_SUPABASE_DB_URL: ${{ secrets.STAGING_SUPABASE_DB_URL }}
+          PRODUCTION_SUPABASE_DB_URL: ${{ secrets.PRODUCTION_SUPABASE_DB_URL }}
+        run: |
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Schema Parity (staging vs production)" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -z "$STAGING_SUPABASE_DB_URL" ] || [ -z "$PRODUCTION_SUPABASE_DB_URL" ]; then
+            echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"
+            echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Migration history diff | ⚠️ skipped — DB URLs not configured |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::STAGING_SUPABASE_DB_URL and/or PRODUCTION_SUPABASE_DB_URL not set; skipping schema comparison"
+            exit 0
+          fi
+
+          set +e
+          bash scripts/check-migration-drift.sh \
+            --staging "$STAGING_SUPABASE_DB_URL" \
+            --production "$PRODUCTION_SUPABASE_DB_URL" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --report migration-drift-report.txt
+          DRIFT_EXIT=$?
+          set -e
+
+          if [ -f migration-drift-report.txt ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "<details><summary>Migration drift report</summary>" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat migration-drift-report.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$DRIFT_EXIT" -ne 0 ]; then
+            echo "::error::Staging schema is behind production. See docs/runbooks/schema-drift.md for resolution steps."
+            echo "DRIFT_DETECTED=true" >> "$GITHUB_ENV"
+          fi
+
+      # ── 5. Verify staging workflow uses correct branch ────────────────────
       - name: Check deploy-staging targets develop branch
         run: |
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -144,7 +185,7 @@ jobs:
             echo "::warning::blue-green-deploy.yml may not be targeting the 'main' branch"
           fi
 
-      # ── 5. Fail job if drift detected ─────────────────────────────────────
+      # ── 6. Fail job if drift detected ─────────────────────────────────────
       - name: Evaluate drift
         run: |
           echo "" >> "$GITHUB_STEP_SUMMARY"

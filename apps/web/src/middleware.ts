@@ -18,6 +18,16 @@ function isCsrfExempt(pathname: string): boolean {
   return CSRF_EXEMPT_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))
 }
 
+/** Public, unauthenticated page routes that must never be redirected to login. */
+const PUBLIC_PATHS = [
+  '/explore',            // Public certificate explorer — no auth required
+  '/verify',             // Public certificate verifier
+]
+
+function isPublicPath(pathname: string): boolean {
+  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))
+}
+
 /** Methods that carry a request body and must declare a JSON Content-Type. */
 const JSON_BODY_METHODS = ['POST', 'PUT', 'PATCH']
 
@@ -116,6 +126,28 @@ export function middleware(req: NextRequest) {
     return new NextResponse(null, { status: 403 })
   }
 
+  // ── Public routes ─────────────────────────────────────────────────────────
+  // Public pages (e.g. /explore, /verify) require no authentication and are
+  // never redirected to login. They are also excluded from CSRF/auth gating.
+  if (isPublicPath(pathname)) {
+    const correlationId = req.headers.get('x-correlation-id') ?? crypto.randomUUID()
+    const res = NextResponse.next({
+      request: {
+        headers: new Headers({
+          ...Object.fromEntries(req.headers),
+          'x-correlation-id': correlationId,
+        }),
+      },
+    })
+    res.headers.set('x-correlation-id', correlationId)
+    if (corsHeaders) {
+      for (const [k, v] of Object.entries(corsHeaders)) {
+        res.headers.set(k, v)
+      }
+    }
+    return res
+  }
+
   // ── Content-Type validation ──────────────────────────────────────────────
   // Reject state-mutating API requests that do not declare a JSON body.
   // This blocks CSRF via HTML form submission (which sends
@@ -175,6 +207,34 @@ export function middleware(req: NextRequest) {
     return redirect
   }
 
+  // ── Embeddable certificate widget ─────────────────────────────────────────
+  // /embed/certificate/[id] is a public, unauthenticated, iframe-embeddable
+  // page for third-party sites. It is cache-friendly and must not be blocked
+  // by auth or CSRF checks. We short-circuit here so the route is served
+  // directly with the appropriate framing and caching headers.
+  const isEmbedPath = /^\/embed\/certificate\/[^/]+$/.test(pathname)
+  if (isEmbedPath) {
+    const embedRes = NextResponse.next()
+    // Allow embedding in third-party iframes (overrides any global DENY).
+    embedRes.headers.set('X-Frame-Options', 'ALLOWALL')
+    embedRes.headers.set(
+      'Content-Security-Policy',
+      "frame-ancestors *",
+    )
+    // Cache-friendly: public, long-lived, with stale-while-revalidate.
+    embedRes.headers.set(
+      'Cache-Control',
+      'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400',
+    )
+    embedRes.headers.set('X-Content-Type-Options', 'nosniff')
+    embedRes.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+    embedRes.headers.set('API-Version', 'v1')
+    const embedCorrelationId =
+      req.headers.get('x-correlation-id') ?? crypto.randomUUID()
+    embedRes.headers.set('x-correlation-id', embedCorrelationId)
+    return embedRes
+  }
+
   // ── Verify endpoint abuse protection ──────────────────────────────────────
   // Rate limit all public verifier paths: /api/verify, /api/verify/[id],
   // /api/v1/verify and /api/v1/verify/[id].
@@ -227,16 +287,24 @@ export function middleware(req: NextRequest) {
 
   // ── Correlation ID injection ──────────────────────────────────────────────
   const correlationId = req.headers.get('x-correlation-id') ?? crypto.randomUUID()
+
+  // ── CSP nonce ─────────────────────────────────────────────────────────────
+  // Generate a fresh nonce per request so inline scripts (Next.js hydration,
+  // Sentry bootstrap) can be allow-listed without 'unsafe-inline'.
+  const cspNonce = generateCspNonce()
+
   const res = NextResponse.next({
     request: {
       headers: new Headers({
         ...Object.fromEntries(req.headers),
         'x-correlation-id': correlationId,
+        'x-csp-nonce': cspNonce,
       }),
     },
   })
   res.headers.set('x-correlation-id', correlationId)
   res.headers.set('API-Version', 'v1')
+  res.headers.set('Content-Security-Policy', buildCspHeader(cspNonce))
 
   // ── Content-Security-Policy: require SRI for third-party assets ───────────
   // Preserve any CSP already set upstream (e.g. by next.config.ts) and only

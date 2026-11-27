@@ -17,9 +17,10 @@ We provide security updates for the following versions:
 
 **Please do not open a public GitHub issue for security vulnerabilities.**
 
-If you discover a potential security issue, please report it to us via email:
+If you discover a potential security issue, please report it to us through either of these private channels:
 
-**[security@solarproof.dev](mailto:security@solarproof.dev)**
+- **Email:** **[security@solarproof.dev](mailto:security@solarproof.dev)**
+- **GitHub Private Security Advisory:** GitHub private security advisories are enabled on this repository. Go to the **Security** tab and click **Report a vulnerability** to submit a report privately.
 
 To help us address the issue quickly, please include:
 
@@ -29,6 +30,8 @@ To help us address the issue quickly, please include:
 - Any suggested remediations or mitigations.
 
 ### Response Timeline
+
+**Response SLA:** We acknowledge every report within **48 hours** of receipt.
 
 - **Acknowledgment:** Within 48 hours of receipt.
 - **Initial Evaluation:** Within 7 days of acknowledgment.
@@ -40,11 +43,23 @@ To help us address the issue quickly, please include:
 
 We follow [coordinated vulnerability disclosure](https://en.wikipedia.org/wiki/Coordinated_vulnerability_disclosure) and ask that you do the same.
 
-1. **Report:** You report the vulnerability privately to our security email.
+1. **Report:** You report the vulnerability privately via email to `security@solarproof.dev` or through a GitHub private security advisory (Security tab → Report a vulnerability).
 2. **Evaluation:** We verify the issue and assess the risk.
 3. **Fix:** We develop and test a security patch.
 4. **Coordination:** We coordinate a release date with you.
 5. **Disclosure:** We publish a security advisory and credit you for the discovery.
+
+---
+
+## Incident Playbooks
+
+| Scenario | Runbook |
+|---|---|
+| Compromised meter private key | [docs/runbooks/compromised-meter-key.md](docs/runbooks/compromised-meter-key.md) |
+| Compromised minter key / unauthorized mint | [docs/SECURITY_INCIDENT_PLAYBOOK.md](docs/SECURITY_INCIDENT_PLAYBOOK.md) |
+| Meter key scheduled rotation | [docs/runbooks/meter-key-rotation.md](docs/runbooks/meter-key-rotation.md) |
+| Minter key rotation | [docs/runbooks/minter-key-rotation.md](docs/runbooks/minter-key-rotation.md) |
+| General incident response | [docs/runbooks/incident-response.md](docs/runbooks/incident-response.md) |
 
 ---
 

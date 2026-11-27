@@ -79,25 +79,18 @@ export const metadata: Metadata = {
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const locale = await getLocale()
   const messages = await getMessages()
+  const nonce = (await headers()).get('x-nonce') ?? undefined
 
   return (
     <html lang={locale} dir={LOCALE_DIRECTIONS[locale as Locale]} suppressHydrationWarning>
       <head>
-        {/*
-          #762 SRI: all cross-origin scripts are declared here with an
-          `integrity` hash and `crossOrigin="anonymous"`. If a hash does not
-          match, the browser blocks the script — see the fallback notes at the
-          top of this file and docs/THREAT_MODEL.md.
-        */}
-        {EXTERNAL_ASSETS.map((asset) => (
-          <Script
-            key={asset.src}
-            src={asset.src}
-            integrity={asset.integrity}
-            crossOrigin="anonymous"
-            strategy="afterInteractive"
-          />
-        ))}
+        {/* Sentry bootstrap — nonce satisfies the CSP without unsafe-inline. */}
+        <script
+          nonce={nonce}
+          dangerouslySetInnerHTML={{
+            __html: `window.__solarproof_nonce__ = ${JSON.stringify(nonce ?? '')};`,
+          }}
+        />
       </head>
       <body className={inter.className}>
         <a
