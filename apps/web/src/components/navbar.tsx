@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Sun, Moon, Menu, X, Wallet, LogOut } from 'lucide-react'
+import { Sun, Moon, Menu, X, Wallet, LogOut, Copy, Check } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { useEffect, useRef, useState } from 'react'
 import { useWallet } from '@/hooks/useWallet'
@@ -56,6 +56,160 @@ function NetworkBadge() {
       />
       {isMainnet ? 'Mainnet' : 'Testnet'}
     </a>
+  )
+}
+
+export function WalletStatus() {
+  const t = useTranslations('nav')
+  const { address, connected, loading, connect, disconnect } = useWallet()
+  const [open, setOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!open) return
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [open])
+
+  // Close dropdown on Escape
+  useEffect(() => {
+    if (!open) return
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [open])
+
+  // Clear pending copy timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current)
+    }
+  }, [])
+
+  async function handleConnect() {
+    setError(null)
+    try {
+      await connect()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to connect wallet')
+    }
+  }
+
+  async function handleCopy() {
+    if (!address) return
+    try {
+      await navigator.clipboard.writeText(address)
+      setCopied(true)
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current)
+      copyTimeoutRef.current = setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setError('Failed to copy address')
+    }
+  }
+
+  function handleDisconnect() {
+    setOpen(false)
+    disconnect()
+  }
+
+  if (loading) {
+    return (
+      <div
+        data-testid="wallet-status-pending"
+        aria-busy="true"
+        aria-label="Loading wallet status"
+        className="hidden items-center gap-1.5 rounded-md border border-gray-200 px-3 py-1.5 dark:border-gray-700 md:flex"
+      >
+        <span
+          aria-hidden="true"
+          className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-300 border-t-transparent dark:border-gray-600 dark:border-t-transparent"
+        />
+        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Loading…</span>
+      </div>
+    )
+  }
+
+  if (connected && address) {
+    return (
+      <div ref={containerRef} className="relative hidden md:block">
+        <button
+          type="button"
+          data-testid="wallet-status-connected"
+          onClick={() => setOpen((o) => !o)}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label={`Wallet connected: ${address}. Open wallet menu`}
+          className="flex items-center gap-1.5 rounded-md border border-gray-200 px-3 py-1.5 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
+        >
+          <span aria-hidden="true" className="h-2 w-2 rounded-full bg-green-500" />
+          <span className="font-mono text-xs font-medium text-gray-700 dark:text-gray-300">
+            {address.slice(0, 4)}…{address.slice(-4)}
+          </span>
+        </button>
+
+        {open && (
+          <div
+            role="menu"
+            data-testid="wallet-dropdown"
+            className="absolute end-0 z-50 mt-1 w-44 rounded-md border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-900"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={handleCopy}
+              className="flex w-full items-center gap-2 px-3 py-2 text-xs text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              {copied ? (
+                <Check className="h-3.5 w-3.5 text-green-500" aria-hidden="true" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              {copied ? 'Copied' : 'Copy Address'}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={handleDisconnect}
+              className="flex w-full items-center gap-2 px-3 py-2 text-xs text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+            >
+              <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+              Disconnect
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="hidden md:block">
+      <button
+        type="button"
+        data-testid="wallet-status-disconnected"
+        onClick={handleConnect}
+        aria-label={t('connectWallet')}
+        className="flex items-center gap-1.5 rounded-md bg-yellow-400 px-3 py-1.5 text-xs font-medium text-gray-900 transition-colors hover:bg-yellow-500"
+      >
+        <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
+        {t('connectWallet')}
+      </button>
+      {error && (
+        <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">
+          {error}
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -164,35 +318,8 @@ export function Navbar({ locale }: NavbarProps) {
           {/* Stellar network indicator — always visible, no browser API needed */}
           <NetworkBadge />
 
-          {/* Wallet connect — only rendered client-side to avoid hydration mismatch */}
-          {mounted && !walletLoading && (
-            connected && address ? (
-              <div className="hidden items-center gap-1 rounded-md border border-gray-200 px-3 py-1.5 dark:border-gray-700 md:flex">
-                <Wallet className="h-3.5 w-3.5 text-gray-500 dark:text-gray-400" aria-hidden="true" />
-                <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
-                  {address.slice(0, 4)}…{address.slice(-4)}
-                </span>
-                <CopyButton value={address} label={`Copy wallet address ${address}`} iconSize={12} />
-                <button
-                  onClick={disconnect}
-                  aria-label={t('disconnectWallet')}
-                  title="Disconnect"
-                  className="ms-0.5 rounded p-0.5 text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-gray-200"
-                >
-                  <LogOut className="h-3 w-3" aria-hidden="true" />
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => connect().catch(() => {})}
-                aria-label={t('connectWallet')}
-                className="hidden items-center gap-1.5 rounded-md bg-yellow-400 px-3 py-1.5 text-xs font-medium text-gray-900 transition-colors hover:bg-yellow-500 md:flex"
-              >
-                <Wallet className="h-3.5 w-3.5" aria-hidden="true" />
-                {t('connectWallet')}
-              </button>
-            )
-          )}
+          {/* Wallet status indicator — only rendered client-side to avoid hydration mismatch */}
+          {mounted && <WalletStatus />}
 
           {/* Dark mode toggle — suppress until mounted to avoid hydration mismatch */}
           <button
@@ -274,7 +401,10 @@ export function Navbar({ locale }: NavbarProps) {
                 <div className="mt-3 space-y-2">
                   {connected && address ? (
                     <div className="rounded-xl border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900">
-                      <p className="text-xs font-semibold text-gray-500 dark:text-gray-400">Wallet connected</p>
+                      <p className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                        <span aria-hidden="true" className="h-2 w-2 rounded-full bg-green-500" />
+                        Wallet connected
+                      </p>
                       <p className="mt-1 font-mono text-sm text-gray-900 dark:text-gray-100">{address.slice(0, 4)}…{address.slice(-4)}</p>
                       <div className="mt-2 flex items-center gap-2">
                         <CopyButton value={address} label={`Copy wallet address ${address}`} iconSize={12} />

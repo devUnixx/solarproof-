@@ -78,12 +78,13 @@ export function AccessibleLegend({
         const pattern = item?.pattern ?? 'solid'
         const patternLabel = PATTERN_LABELS[pattern] ?? PATTERN_LABELS.solid
         const color = item?.color ?? entry.color
-        const accessibleLabel = `${description} (${patternLabel})`
+        const accessibleLabel = `${label}: ${description} (${patternLabel})`
 
         return (
-          <li key={label} className="flex items-center gap-1.5">
+          <li key={label} className="flex items-center gap-1.5" aria-label={accessibleLabel}>
             <PatternSwatch color={color} pattern={pattern} />
-            <span aria-label={accessibleLabel}>{label}</span>
+            <span aria-hidden="true">{label}</span>
+            <span className="sr-only">{accessibleLabel}</span>
           </li>
         )
       })}

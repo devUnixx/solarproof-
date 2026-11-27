@@ -1,30 +1,171 @@
-# Developer Onboarding Guide
+# Operator Onboarding Guide
 
-Welcome to SolarProof. This guide gets you from zero to a running local environment with a simulated meter reading end-to-end — and shows you how to start contributing.
+Welcome to SolarProof! This guide walks a new cooperative operator through the complete product flow — from creating an account to verifying your first certificate — in about 15 minutes.
 
-> **New here?** Read sections 1–3 to understand the project, then jump to section 8 (Your First Contribution) to find an issue and open a PR.
+> **Français ?** Ce guide est aussi disponible en français : [docs/ONBOARDING.fr.md](ONBOARDING.fr.md).
+>
+> **Developer?** If you're here to set up a local development environment or contribute code, skip to the [Developer Setup Appendix](#appendix-developer-setup) at the end of this document.
 
 ---
 
 ## Table of Contents
 
-1. [What SolarProof Does](#1-what-solarproof-does)
-2. [Architecture Overview](#2-architecture-overview)
-3. [Key Data Flows](#3-key-data-flows)
-4. [Prerequisites](#4-prerequisites)
-5. [Clone and Install](#5-clone-and-install)
-6. [Environment Variables](#6-environment-variables)
-7. [Run the App and Simulate a Meter Reading](#7-run-the-app-and-simulate-a-meter-reading)
-8. [Your First Contribution](#8-your-first-contribution)
-9. [Codebase Navigation](#9-codebase-navigation)
-10. [Testing](#10-testing)
-11. [Common Patterns](#11-common-patterns)
-12. [Troubleshooting](#12-troubleshooting)
-13. [Getting Help](#13-getting-help)
+1. [Before You Start](#1-before-you-start)
+2. [Create Your Account](#2-create-your-account)
+3. [Register Your Meter](#3-register-your-meter)
+4. [Submit Your First Reading](#4-submit-your-first-reading)
+5. [Verify Your Certificate](#5-verify-your-certificate)
+6. [Troubleshooting First-Use Errors](#6-troubleshooting-first-use-errors)
+7. [Getting Help](#7-getting-help)
+8. [Appendix: Developer Setup](#appendix-developer-setup)
 
 ---
 
-## 1. What SolarProof Does
+## 1. Before You Start
+
+You'll need:
+
+- A cooperative registered with SolarProof (or permission to create one).
+- Your meter's **public key** (provided by your meter installer or generated during commissioning).
+- A Stellar wallet (e.g. [Freighter](https://freighter.app)) funded on **Testnet** for your first run.
+- About 15 minutes.
+
+> **Screenshots:** Placeholders like `![Screenshot: ...](images/onboarding/...)` mark where UI screenshots belong. Image files live in `docs/images/onboarding/`.
+
+---
+
+## 2. Create Your Account
+
+1. Open the app at https://solarproof.vercel.app (or your cooperative's deployment URL).
+2. Click **Sign up** on the landing page.
+
+   ![Screenshot: Landing page with Sign up button](images/onboarding/01-landing.png)
+
+3. Enter your email, a strong password, and your cooperative name. Click **Create account**.
+4. Check your inbox for a verification email and click the confirmation link.
+5. Connect your Stellar wallet when prompted. Approve the connection in Freighter.
+
+   ![Screenshot: Wallet connection prompt](images/onboarding/02-connect-wallet.png)
+
+6. You'll land on the **Dashboard**. A new cooperative starts with zero meters and zero certificates.
+
+   ![Screenshot: Empty dashboard for a new cooperative](images/onboarding/03-dashboard-empty.png)
+
+✅ **Checkpoint:** You can log in and see the dashboard.
+
+---
+
+## 3. Register Your Meter
+
+1. In the sidebar, click **Meters**.
+2. Click **Register meter**.
+
+   ![Screenshot: Meters page with Register meter button](images/onboarding/04-meters-page.png)
+
+3. Fill in the form:
+   - **Name** — a human-readable label, e.g. `rooftop-solar-01`.
+   - **Public key (hex)** — the Ed25519 public key from your meter installer.
+   - **Location** — optional description of where the meter is installed.
+4. Click **Save**. The meter appears in the list with status **Active**.
+
+   ![Screenshot: Meter registration form filled in](images/onboarding/05-register-meter-form.png)
+
+> ⚠️ **Important:** The public key must match the private key inside the meter exactly. If they don't match, readings will be rejected with `Invalid meter signature` (see [Troubleshooting](#6-troubleshooting-first-use-errors)).
+
+✅ **Checkpoint:** Your meter shows as **Active** in the Meters list.
+
+---
+
+## 4. Submit Your First Reading
+
+Readings are signed by the meter itself — you don't type kWh values by hand in production. For your first reading you can either:
+
+- **Use a real meter** that is already configured to POST to your API endpoint, or
+- **Simulate a reading** with the helper script (see the [Developer Setup Appendix](#appendix-developer-setup), step 7).
+
+Once a reading is submitted:
+
+1. Open **Dashboard**. Within a few seconds the reading appears in **Recent readings**.
+2. The reading is anchored on Stellar and a certificate is minted to your cooperative admin address.
+
+   ![Screenshot: Dashboard showing a new reading and certificate count](images/onboarding/06-dashboard-with-reading.png)
+
+3. Open **Certificates** to see the minted certificate with its transaction IDs.
+
+   ![Screenshot: Certificates page with first certificate](images/onboarding/07-certificates-list.png)
+
+✅ **Checkpoint:** You see at least one certificate in the Certificates list.
+
+---
+
+## 5. Verify Your Certificate
+
+Anyone — including regulators and buyers — can verify a certificate without logging in.
+
+1. Copy the certificate ID (or the anchor transaction hash) from the Certificates page.
+2. Open **/verify** (linked in the footer of every page).
+3. Paste the ID or hash and click **Verify**.
+
+   ![Screenshot: Verify page with certificate ID entered](images/onboarding/08-verify-input.png)
+
+4. Review the chain of custody: **meter reading → Ed25519 signature → ledger anchor → certificate**.
+
+   ![Screenshot: Verification result showing full chain of custody](images/onboarding/09-verify-result.png)
+
+✅ **Checkpoint:** The verifier shows a green checkmark for every step in the chain.
+
+🎉 **You're done!** Your cooperative is now producing verifiable energy certificates.
+
+---
+
+## 6. Troubleshooting First-Use Errors
+
+**"Invalid meter signature" when submitting a reading**
+→ The public key registered in SolarProof does not match the private key used by the meter. Re-check the hex string with your installer (no spaces, lowercase, 64 characters) and update the meter record.
+
+**"Meter not found or inactive"**
+→ The meter is either not registered or marked inactive. Open **Meters**, confirm the meter exists and its status is **Active**.
+
+**Verification email never arrives**
+→ Check your spam folder. If it's still missing after 10 minutes, use **Resend verification** on the login page.
+
+**Wallet won't connect**
+→ Make sure Freighter is unlocked and set to **Testnet**. Refresh the page and try again.
+
+**Certificate doesn't appear after a reading**
+→ Anchoring and minting can take up to 30 seconds. Refresh the Certificates page. If it's still missing after a minute, check the reading's status on the Dashboard — a failed reading shows an error badge with details.
+
+**"Insufficient balance" when minting**
+→ Your minter account needs Testnet XLM. Fund it via [Friendbot](https://friendbot.stellar.org) using the minter's public key.
+
+**Dashboard shows zeros after login**
+→ Confirm you're logged into the correct cooperative. The cooperative name appears in the top-right menu.
+
+---
+
+## 7. Getting Help
+
+- **Issues:** Browse [open issues](https://github.com/katecatherinaa/solarproof/issues) or open a new one.
+- **Security:** Found a vulnerability? See [SECURITY.md](../SECURITY.md) for responsible disclosure.
+- **Français :** [docs/ONBOARDING.fr.md](ONBOARDING.fr.md)
+
+---
+
+## Appendix: Developer Setup
+
+The full developer guide — architecture, local environment, contract deployment, testing, and contribution workflow — lives in [docs/DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md). Start there if you want to run SolarProof locally or contribute code.
+
+Quick links:
+
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — commit conventions and PR workflow
+- [docs/adr/](adr/) — architecture decision records
+- [docs/runbooks/](runbooks/) — operational runbooks
+
+---
+
+*Built on Stellar · SolarProof Contributors 2026*
+
+## Appendix A: What SolarProof Does
 
 SolarProof closes the gap between physical energy generation and verifiable on-chain certification. Every kilowatt-hour is signed at the meter, anchored to the Stellar blockchain, and publicly auditable — no trust required.
 
@@ -40,7 +181,7 @@ Existing renewable energy certificate systems (I-REC, TIGR, Energy Web) have a c
 
 ---
 
-## 2. Architecture Overview
+## Appendix B: Architecture Overview
 
 ```
 Smart Meter (Ed25519 keypair)
@@ -82,7 +223,7 @@ Public Verifier  (https://solarproof.vercel.app/verify)
 
 ---
 
-## 3. Key Data Flows
+## Appendix C: Key Data Flows
 
 ### Meter Reading → Certificate (the main flow)
 
@@ -115,7 +256,7 @@ Public Verifier  (https://solarproof.vercel.app/verify)
 
 ---
 
-## 4. Prerequisites
+## Appendix D: Prerequisites
 
 Install the following before cloning:
 
@@ -139,7 +280,7 @@ stellar --version   # stellar x.x.x
 
 ---
 
-## 5. Clone and Install
+## Appendix E: Clone and Install
 
 ```bash
 git clone https://github.com/katecatherinaa/solarproof.git
@@ -155,7 +296,7 @@ pnpm install
 
 ---
 
-## 6. Environment Variables
+## Appendix F: Environment Variables
 
 ```bash
 cp apps/web/.env.example apps/web/.env.local
@@ -194,7 +335,7 @@ For contract IDs, see [Deploying contracts locally](#deploying-contracts-locally
 
 ---
 
-## 7. Run the App and Simulate a Meter Reading
+## Appendix G: Run the App and Simulate a Meter Reading
 
 ### Option A — Docker (recommended)
 
@@ -305,7 +446,7 @@ Copy the IDs into `apps/web/.env.local`.
 
 ---
 
-## 8. Your First Contribution
+## Appendix H: Your First Contribution
 
 ### Find an issue
 
@@ -386,7 +527,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full contribution guide.
 
 ---
 
-## 9. Codebase Navigation
+## Appendix I: Codebase Navigation
 
 ### Monorepo structure
 
@@ -479,7 +620,7 @@ ADRs document key design decisions. Read them to understand why things are the w
 
 ---
 
-## 10. Testing
+## Appendix J: Testing
 
 ### Web — unit tests (Vitest)
 
@@ -546,7 +687,7 @@ pnpm test
 
 ---
 
-## 11. Common Patterns
+## Appendix K: Common Patterns
 
 ### API route pattern
 
@@ -634,7 +775,7 @@ logger.error('readings.post.db_insert_failed', { error: '...' })
 
 ---
 
-## 12. Troubleshooting
+## Appendix L: Developer Troubleshooting
 
 **`pnpm install` fails with peer dependency errors**
 → Ensure Node.js v22+ is active: `node --version`. Switch with `nvm use 22`.
@@ -674,14 +815,10 @@ curl "https://friendbot.stellar.org?addr=$(stellar keys address deployer)"
 
 ---
 
-## 13. Getting Help
+## Appendix M: Developer Getting Help
 
 - **Issues:** Browse [open issues](https://github.com/katecatherinaa/solarproof/issues) or open a new one.
 - **CONTRIBUTING.md:** Read [CONTRIBUTING.md](../CONTRIBUTING.md) for commit conventions and PR workflow.
 - **ADRs:** Check [docs/adr/](adr/) for architectural decisions and rationale.
 - **Runbooks:** See [docs/runbooks/](runbooks/) for operational procedures.
 - **Security:** Found a vulnerability? See [SECURITY.md](../SECURITY.md) for responsible disclosure.
-
----
-
-*Built on Stellar · SolarProof Contributors 2026*
