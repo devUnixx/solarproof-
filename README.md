@@ -238,6 +238,26 @@ See [CHANGELOG.md](CHANGELOG.md) for a history of notable changes.
 
 ---
 
+## Localisation
+
+SolarProof currently ships in **English** and **French**. Community translators are welcome to add new locales (e.g. Spanish, Portuguese).
+
+See the [translation contribution guide](CONTRIBUTING.md#adding-a-new-locale) in CONTRIBUTING.md for the step-by-step process: copy `en.json` → translate → add the locale to `SUPPORTED_LOCALES` → run `pnpm i18n:check`. Per-locale pluralisation rules are documented there as well.
+
+---
+
+## Security
+
+We take the security of SolarProof seriously. If you discover a vulnerability, please report it **privately** — do not open a public issue.
+
+- **Process:** see [SECURITY.md](SECURITY.md) for our full responsible-disclosure policy.
+- **Private reporting:** email **security@solarproof.dev**, or use GitHub's private security advisories (the repository's *Security* tab → *Report a vulnerability*).
+- **Response SLA:** we acknowledge every report within **48 hours** and will keep you updated on remediation progress.
+
+---
+
+## License
+
 ## License
 
 Apache-2.0 — See [LICENSE](LICENSE).
