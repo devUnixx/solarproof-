@@ -13,5 +13,6 @@ Use [template.md](template.md) when creating a new ADR.
 | [005](005-monorepo-structure.md) | Monorepo Structure with Turborepo + pnpm | Accepted |
 | [006](006-certificate-retirement-model.md) | Certificate Retirement Model | Accepted |
 | [007](007-supabase-service-role-usage.md) | Supabase Service Role Key Usage | Accepted |
+| [008](008-storage-key-namespace-strategy.md) | Storage Key Namespace Strategy | Proposed |
 | [009](009-redis-caching.md) | Redis Caching Strategy | Accepted |
 | [010](010-redis-dual-instance.md) | Redis Dual-Instance Design (Cache vs Queue) | Accepted |
