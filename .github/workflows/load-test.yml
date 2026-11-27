@@ -36,7 +36,7 @@ jobs:
     name: Verify rate limit enforcement (/api/verify)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install k6
         run: |
@@ -110,7 +110,7 @@ jobs:
 
       - name: Upload verify rate-limit results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: verify-rate-limit-results-${{ github.run_id }}
           path: verify-rate-limit-summary.json
@@ -120,8 +120,11 @@ jobs:
   load-test:
     name: k6 load test (${{ github.event.inputs.scenario || 'baseline' }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install k6
         run: |
@@ -143,6 +146,101 @@ jobs:
             -e METER_ID=${{ github.event.inputs.meter_id || '00000000-0000-0000-0000-000000000001' }} \
             -e SCENARIO=${{ github.event.inputs.scenario || 'baseline' }} \
             --summary-export=k6-summary.json || true
+
+      - name: Parse k6 summary (p50/p95/p99 + error rate)
+        id: parse_summary
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const out = process.env.GITHUB_OUTPUT;
+          const append = (k, v) => fs.appendFileSync(out, `${k}=${v}\n`);
+          let p50 = 'N/A', p95 = 'N/A', p99 = 'N/A', errRate = 'N/A';
+          try {
+            const data = JSON.parse(fs.readFileSync('k6-summary.json', 'utf8'));
+            const metrics = data.metrics || {};
+            const dur = metrics.reading_duration_ms || metrics.http_req_duration || {};
+            const fmt = (v) => (v === undefined || v === null) ? 'N/A' : Number(v).toFixed(0);
+            p50 = fmt(dur['p(50)']);
+            p95 = fmt(dur['p(95)']);
+            p99 = fmt(dur['p(99)']);
+            const failed = metrics.http_req_failed || {};
+            if (failed.rate !== undefined && failed.rate !== null) {
+              errRate = (Number(failed.rate) * 100).toFixed(2);
+            } else if (failed.value !== undefined && failed.value !== null) {
+              errRate = (Number(failed.value) * 100).toFixed(2);
+            }
+          } catch (e) {
+            console.error(`ERROR parsing k6 summary: ${e.message}`);
+          }
+          append('p50_ms', p50);
+          append('p95_ms', p95);
+          append('p99_ms', p99);
+          append('error_rate_pct', errRate);
+          console.log(`p50=${p50}ms p95=${p95}ms p99=${p99}ms error_rate=${errRate}%`);
+          NODE
+
+      - name: Enforce performance thresholds
+        id: enforce_perf
+        run: |
+          P95="${{ steps.parse_summary.outputs.p95_ms }}"
+          ERR="${{ steps.parse_summary.outputs.error_rate_pct }}"
+          FAILED=0
+
+          if [ "$ERR" != "N/A" ] && [ -n "$ERR" ]; then
+            if python3 -c "import sys; sys.exit(0 if float('$ERR') > 1.0 else 1)"; then
+              echo "::error::Error rate ${ERR}% exceeds 1% threshold"
+              FAILED=1
+            else
+              echo "✅ Error rate ${ERR}% within 1% threshold"
+            fi
+          else
+            echo "::warning::Could not determine error rate — skipping error-rate threshold check"
+          fi
+
+          if [ "$P95" != "N/A" ] && [ -n "$P95" ]; then
+            if [ "$P95" -gt 500 ]; then
+              echo "::error::P95 latency ${P95}ms exceeds 500ms threshold"
+              FAILED=1
+            else
+              echo "✅ P95 latency ${P95}ms within 500ms threshold"
+            fi
+          else
+            echo "::warning::Could not determine P95 latency — skipping latency threshold check"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Post PR comment with load-test summary
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const p50 = '${{ steps.parse_summary.outputs.p50_ms }}';
+            const p95 = '${{ steps.parse_summary.outputs.p95_ms }}';
+            const p99 = '${{ steps.parse_summary.outputs.p99_ms }}';
+            const errRate = '${{ steps.parse_summary.outputs.error_rate_pct }}';
+            const scenario = '${{ github.event.inputs.scenario || 'baseline' }}';
+            const body = [
+              '## k6 Load Test Summary',
+              '',
+              '| Metric | Value | Threshold |',
+              '|---|---|---|',
+              `| Scenario | ${scenario} | — |`,
+              `| p50 latency | ${p50} ms | — |`,
+              `| p95 latency | ${p95} ms | ≤ 500 ms |`,
+              `| p99 latency | ${p99} ms | — |`,
+              `| Error rate | ${errRate}% | ≤ 1% |`,
+              '',
+              '> Baseline documented in [docs/PERFORMANCE_BASELINE.md](../blob/main/docs/PERFORMANCE_BASELINE.md).',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
 
       - name: P95 Regression Check
         id: regression_check
@@ -219,7 +317,7 @@ jobs:
 
       - name: Upload k6 results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: k6-results-${{ github.event.inputs.scenario || 'baseline' }}-${{ github.run_id }}
           path: |

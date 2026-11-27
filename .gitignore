@@ -16,19 +16,18 @@ coverage/
 *.flamegraph.html
 reports/
 
-# Test snapshots — generated artefacts, not source
-**/test_snapshots/
+# Test snapshots
 **/__snapshots__/
-*.snap
+**/*.snap
 
-# TypeScript incremental build info
+# TypeScript build info
 *.tsbuildinfo
 
-# Editor and OS artefacts
+# Editor and OS files
 .idea/
 .vscode/
 Thumbs.db
 
-# Playwright test output
-playwright-report/
+# Playwright test artifacts
 test-results/
+playwright-report/

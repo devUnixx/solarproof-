@@ -58,19 +58,29 @@ updates:
       - dependency-name: "*"
         update-types: [version-update:semver-major]
 
-  # GitHub Actions — monthly to reduce noise
+  # GitHub Actions — weekly so SHA-pinned actions stay current.
+  # Dependabot understands full-SHA pins and will bump the SHA (and the
+  # trailing version comment) when a new release is published.
   - package-ecosystem: github-actions
     directory: /
     target-branch: develop
     schedule:
-      interval: monthly
-    open-pull-requests-limit: 5
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
     groups:
       # Security advisories are kept out of the regular groups so the
       # auto-merge workflow can target them via the security-advisory label.
       security-updates:
         applies-to: security-updates
         patterns: ["*"]
+      # Batch routine SHA bumps so pinned actions don't drift.
+      patch-updates:
+        applies-to: version-updates
+        update-types: [patch]
+      minor-updates:
+        applies-to: version-updates
+        update-types: [minor]
     labels:
       - dependencies
       - github-actions

@@ -30,6 +30,37 @@ function formatDate(iso: string) {
   })
 }
 
+export function TransferHistoryTimelineSkeleton() {
+  return (
+    <section
+      aria-labelledby="transfer-history-title"
+      aria-busy="true"
+      className="mt-8 rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900"
+    >
+      <h2
+        id="transfer-history-title"
+        className="mb-4 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
+      >
+        Transfer history
+      </h2>
+      <ul aria-label="Loading transfer history" className="space-y-4">
+        {[0, 1, 2].map((i) => (
+          <li key={i} className="flex gap-3">
+            <div className="flex flex-col items-center" aria-hidden="true">
+              <Skeleton className="h-6 w-6 rounded-full" />
+              {i < 2 && <div className="mt-1 w-px flex-1 bg-gray-200 dark:bg-gray-700" />}
+            </div>
+            <div className="flex flex-1 flex-col gap-1.5 pb-5">
+              <Skeleton className="h-3 w-28" />
+              <Skeleton className="h-4 w-full max-w-sm" />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 export function TransferHistoryTimeline({ certificateId }: Props) {
   const [events, setEvents] = useState<TransferEvent[]>([])
   const [loading, setLoading] = useState(true)
@@ -136,7 +167,9 @@ export function TransferHistoryTimeline({ certificateId }: Props) {
             return (
               <li
                 key={event.id}
-                aria-label={`Transfer ${i + 1}: from ${event.from_address} to ${event.to_address} on ${formatDate(event.timestamp)}`}
+                aria-label={`Transfer ${i + 1}: from ${event.from_address} to ${event.to_address} on ${formatDate(event.timestamp)}${
+                  event.transfer_tx_hash ? `, transaction ${event.transfer_tx_hash}` : ', no transaction hash'
+                }`}
                 className="flex gap-3"
               >
                 {/* Timeline spine */}
@@ -173,7 +206,7 @@ export function TransferHistoryTimeline({ certificateId }: Props) {
                       {shortAddr(event.to_address)}
                     </span>
 
-                    {event.transfer_tx_hash && (
+                    {event.transfer_tx_hash ? (
                       <a
                         href={`https://stellar.expert/explorer/testnet/tx/${event.transfer_tx_hash}`}
                         target="_blank"
@@ -182,8 +215,15 @@ export function TransferHistoryTimeline({ certificateId }: Props) {
                         className="inline-flex items-center gap-0.5 text-xs text-blue-600 hover:underline dark:text-blue-400"
                       >
                         <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                        Explorer
+                        {shortAddr(event.transfer_tx_hash)}
                       </a>
+                    ) : (
+                      <span
+                        aria-label="No transaction hash"
+                        className="text-xs text-gray-400 dark:text-gray-500"
+                      >
+                        —
+                      </span>
                     )}
                   </div>
                 </div>

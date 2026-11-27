@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import Link from 'next/link'
@@ -15,6 +16,7 @@ import { createServiceClient } from '@/lib/supabase'
 import { CertificateChain, type ChainStep } from '@/components/certificate-chain'
 import { CopyableText } from '@/components/copy-button'
 import { TransferHistoryTimeline } from '@/components/transfer-history-timeline'
+import { TransferHistoryTimelineSkeleton } from '@/components/skeleton'
 import { CertificateQRCode } from '@/components/certificate-qr-code'
 import { PrintButton } from '@/components/print-button'
 
@@ -211,7 +213,9 @@ export default async function CertificatePage({
       <CertificateChain steps={steps} />
 
       {/* Transfer history timeline */}
-      <TransferHistoryTimeline certificateId={id} />
+      <Suspense fallback={<TransferHistoryTimelineSkeleton />}>
+        <TransferHistoryTimeline certificateId={id} />
+      </Suspense>
 
       {/* Footer actions */}
       <div className="print-hide mt-8 flex flex-wrap gap-3">
