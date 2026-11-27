@@ -80,6 +80,34 @@ To intentionally update an event schema snapshot:
    them.
 
 New public entry points must have focused tests that exercise their behavior;
-the resulting snapshots should be committed with those tests. New events must
-add a corresponding entry to the covered events table above and a committed
-snapshot under `apps/contracts/snapshots/`.
+the resulting snapshots should be committed with those tests.
+
+## WASM binary size snapshots
+
+WASM binary size directly affects Stellar deployment cost, so accidental bloat
+is treated as a regression. A dedicated CI job builds each contract in release
+mode (`wasm32-unknown-unknown`) and records the resulting binary sizes in a
+snapshot file committed to the repository:
+
+- Snapshot file: `apps/contracts/wasm-size-snapshot.json`
+- CI job: the `wasm-size-snapshot` job in the contracts workflow, which runs
+  `bash scripts/check-wasm-size.sh` from the repository root.
+
+The check compares each contract's current release WASM size against the size
+recorded in the snapshot. The job **fails if any contract WASM grows by more
+than 5%** versus its snapshot entry. Shrinking binaries are always allowed and
+should be recorded by updating the snapshot.
+
+### Updating the size snapshot
+
+The snapshot must be updated deliberately, never to simply make CI pass:
+
+1. Run `bash scripts/check-wasm-size.sh` from the repository root to see which
+   contracts exceed the 5% threshold and by how much.
+2. Confirm the size change is intentional and justified (e.g. a new feature or
+   dependency). Investigate unexpected growth before accepting it.
+3. Regenerate the snapshot with `bash scripts/check-wasm-size.sh --update`.
+4. Review the diff to `apps/contracts/wasm-size-snapshot.json` and commit it in
+   the same change as the code that caused the size change.
+5. Re-run `bash scripts/check-wasm-size.sh`; it must pass with the updated
+   snapshot committed.
