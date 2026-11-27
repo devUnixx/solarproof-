@@ -14,3 +14,4 @@ Use [template.md](template.md) when creating a new ADR.
 | [006](006-certificate-retirement-model.md) | Certificate Retirement Model | Accepted |
 | [007](007-supabase-service-role-usage.md) | Supabase Service Role Key Usage | Accepted |
 | [009](009-redis-caching.md) | Redis Caching Strategy | Accepted |
+| [010](010-redis-dual-instance.md) | Redis Dual-Instance Design (Cache vs Queue) | Accepted |
