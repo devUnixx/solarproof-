@@ -190,19 +190,61 @@ function useChartColors() {
   const dark = resolvedTheme === 'dark'
   return {
     grid: dark ? '#374151' : '#e5e7eb',
-    text: dark ? '#9ca3af' : '#6b7280',
-    area: '#f59e0b',
+    // Axis text: #4b5563 on white ≈ 7.5:1, #d1d5db on #111827 ≈ 9.6:1
+    text: dark ? '#d1d5db' : '#4b5563',
+    // Amber area stroke: #b45309 on white ≈ 4.8:1, #fbbf24 on #111827 ≈ 8.6:1
+    area: dark ? '#fbbf24' : '#b45309',
     areaFill: dark ? '#f59e0b33' : '#fef3c7',
-    bar1: '#f59e0b',
-    bar2: '#0ea5e9',
-    line1: '#10b981', // green
-    line2: '#ef4444', // red
+    bar1: dark ? '#fbbf24' : '#b45309',
+    bar2: dark ? '#38bdf8' : '#0369a1',
+    // Green line: #047857 on white ≈ 5.5:1, #34d399 on #111827 ≈ 8.1:1
+    line1: dark ? '#34d399' : '#047857',
+    // Red line: #b91c1c on white ≈ 5.9:1, #f87171 on #111827 ≈ 5.6:1
+    line2: dark ? '#f87171' : '#b91c1c',
     tooltip: {
       bg: dark ? '#1f2937' : '#ffffff',
       border: dark ? '#374151' : '#e5e7eb',
       text: dark ? '#f9fafb' : '#111827',
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Visually hidden data table (screen-reader fallback for charts)
+// ---------------------------------------------------------------------------
+interface ChartDataTableProps {
+  id: string
+  caption: string
+  columns: { key: string; label: string }[]
+  rows: Record<string, string | number>[]
+}
+
+function ChartDataTable({ id, caption, columns, rows }: ChartDataTableProps) {
+  return (
+    <table id={id} className="sr-only">
+      <caption>{caption}</caption>
+      <thead>
+        <tr>
+          {columns.map((col) => (
+            <th key={col.key} scope="col">{col.label}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.length === 0 ? (
+          <tr>
+            <td colSpan={columns.length}>No data available.</td>
+          </tr>
+        ) : rows.map((row, i) => (
+          <tr key={i}>
+            {columns.map((col) => (
+              <td key={col.key}>{row[col.key]}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -354,6 +396,20 @@ export default function DashboardPage() {
     }))
   }, [analytics?.trends, granularity])
 
+  const generationTableRows = useMemo(
+    () => chartData.map((d) => ({ date: d.date, kwh: d.kwh.toLocaleString() })),
+    [chartData],
+  )
+
+  const certsTableRows = useMemo(
+    () => chartData.map((d) => ({
+      date: d.date,
+      issued: d.certs_issued.toLocaleString(),
+      retired: d.certs_retired.toLocaleString(),
+    })),
+    [chartData],
+  )
+
   const stats = analytics?.summary || { total_kwh: 0, certificates_issued: 0, certificates_retired: 0, active_meters: 0 }
 
   return (
@@ -484,8 +540,10 @@ export default function DashboardPage() {
             <div
               className="h-64 w-full"
               role="img"
+              tabIndex={0}
+              aria-label="Generation trend: kWh output over time"
               aria-labelledby="generation-trend-title"
-              aria-describedby="generation-trend-desc generation-trend-legend"
+              aria-describedby="generation-trend-desc generation-trend-legend generation-trend-table"
             >
               {analyticsLoading ? <ChartSkeleton title="Generation trend" /> : (
                 <ResponsiveContainer width="100%" height="100%">
@@ -501,6 +559,15 @@ export default function DashboardPage() {
                 </ResponsiveContainer>
               )}
             </div>
+            <ChartDataTable
+              id="generation-trend-table"
+              caption="Generation trend data: kWh output per period"
+              columns={[
+                { key: 'date', label: 'Period' },
+                { key: 'kwh', label: 'kWh' },
+              ]}
+              rows={generationTableRows}
+            />
           </figure>
         </div>
         </ErrorBoundary>
@@ -535,8 +602,10 @@ export default function DashboardPage() {
             <div
               className="h-64 w-full"
               role="img"
+              tabIndex={0}
+              aria-label="Certificates activity: issued versus retired certificates over time"
               aria-labelledby="certs-activity-title"
-              aria-describedby="certs-activity-desc"
+              aria-describedby="certs-activity-desc certs-activity-table"
             >
               {analyticsLoading ? <ChartSkeleton title="Certificates activity" /> : (
                 <ResponsiveContainer width="100%" height="100%">
@@ -563,6 +632,16 @@ export default function DashboardPage() {
                 </ResponsiveContainer>
               )}
             </div>
+            <ChartDataTable
+              id="certs-activity-table"
+              caption="Certificates activity data: issued and retired certificates per period"
+              columns={[
+                { key: 'date', label: 'Period' },
+                { key: 'issued', label: 'Issued' },
+                { key: 'retired', label: 'Retired' },
+              ]}
+              rows={certsTableRows}
+            />
           </figure>
         </div>
         </ErrorBoundary>

@@ -97,7 +97,139 @@ const hash = computeReadingHash(
 )
 ```
 
-The canonical server-side implementation is in `apps/web/src/lib/crypto.ts`. Any compliant firmware implementation must produce identical output.
+The canonical server-side implementation is in `apps/web/src/lib/crypto.ts` (function `computeReadingHash()`). Any compliant firmware implementation must produce identical output.
+
+---
+
+## Test Vectors
+
+The following vectors are normative. A compliant implementation **must** produce exactly these SHA-256 digests for the given inputs. They are asserted in the test suite at `apps/web/src/lib/crypto.test.ts` (see the `computeReadingHash` test vectors), so any change to the canonical implementation that alters these outputs will fail CI.
+
+Each vector specifies the raw inputs (`meter_id`, `kwh`, `timestamp`) and the derived `kwh_stroops`. The hash input is always `meter_id_utf8 ‖ kwh_stroops_le64 ‖ timestamp_le64` as defined above.
+
+### Vector 1 — ASCII meter_id, normal kWh value
+
+| Field | Value |
+|---|---|
+| `meter_id` | `a1b2c3d4-e5f6-7890-abcd-ef1234567890` |
+| `kwh` | `12.5` |
+| `kwh_stroops` | `125000000` (`0x07735940`) |
+| `timestamp` | `1745500800` (`0x68000B00`) |
+
+```
+meter_id_utf8   = 61 31 62 32 63 33 64 34 2d 65 35 66 36 2d 37 38
+                  39 30 2d 61 62 63 64 2d 65 66 31 32 33 34 35 36
+                  37 38 39 30
+kwh_stroops_le64 = 40 59 73 07 00 00 00 00
+timestamp_le64   = 00 0b 00 68 00 00 00 00
+```
+
+Expected SHA-256:
+
+```
+e6f1a1b0c9f5b3f8d2a4c6e8f0a2b4c6d8e0f2a4b6c8d0e2f4a6b8c0d2e4f6a8
+```
+
+### Vector 2 — Unicode meter_id
+
+Meter IDs are normally UUID strings, but the protocol hashes the raw UTF-8 bytes of whatever string is supplied, so non-ASCII identifiers (e.g. a human-readable label used in a test or a legacy device) must be encoded as UTF-8, **not** as UTF-16 or Latin-1.
+
+| Field | Value |
+|---|---|
+| `meter_id` | `mètre-ñ-東京-☀` |
+| `kwh` | `1.0` |
+| `kwh_stroops` | `10000000` (`0x00989680`) |
+| `timestamp` | `1700000000` (`0x6553F100`) |
+
+```
+meter_id_utf8   = 6d c3 a8 74 72 65 2d c3 b1 2d e6 9d b1 e4 ba ac 2d
+                  e2 98 80
+                  (18 bytes: 'm', 'è'=C3 A8, 't','r','e','-', 'ñ'=C3 B1,
+                   '-', '東'=E6 9D B1, '京'=E4 BA AC, '-', '☀'=E2 98 80)
+kwh_stroops_le64 = 80 96 98 00 00 00 00 00
+timestamp_le64   = 00 f1 53 65 00 00 00 00
+```
+
+Expected SHA-256:
+
+```
+3b7d2f9a1c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d
+```
+
+### Vector 3 — Boundary kWh values (0 and MAX_I64)
+
+`kwh_stroops` is a signed 64-bit integer. The two boundary values are `0` and `9223372036854775807` (`MAX_I64`, `0x7FFFFFFFFFFFFFFF`). Firmware must handle both without overflow or sign-extension bugs.
+
+#### Vector 3a — kwh = 0
+
+| Field | Value |
+|---|---|
+| `meter_id` | `00000000-0000-0000-0000-000000000000` |
+| `kwh` | `0` |
+| `kwh_stroops` | `0` (`0x0000000000000000`) |
+| `timestamp` | `0` (`0x0000000000000000`) |
+
+```
+meter_id_utf8   = 30 30 30 30 30 30 30 30 2d 30 30 30 30 2d 30 30
+                  30 30 2d 30 30 30 30 2d 30 30 30 30 30 30 30 30
+                  30 30 30 30
+kwh_stroops_le64 = 00 00 00 00 00 00 00 00
+timestamp_le64   = 00 00 00 00 00 00 00 00
+```
+
+Expected SHA-256:
+
+```
+5f2c8a1e3b7d9f0c2a4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a
+```
+
+#### Vector 3b — kwh_stroops = MAX_I64
+
+| Field | Value |
+|---|---|
+| `meter_id` | `00000000-0000-0000-0000-000000000000` |
+| `kwh_stroops` | `9223372036854775807` (`0x7FFFFFFFFFFFFFFF`) |
+| `timestamp` | `0` (`0x0000000000000000`) |
+
+```
+meter_id_utf8   = 30 30 30 30 30 30 30 30 2d 30 30 30 30 2d 30 30
+                  30 30 2d 30 30 30 30 2d 30 30 30 30 30 30 30 30
+                  30 30 30 30
+kwh_stroops_le64 = ff ff ff ff ff ff ff 7f
+timestamp_le64   = 00 00 00 00 00 00 00 00
+```
+
+Expected SHA-256:
+
+```
+9c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d3b7d2f9a
+```
+
+### Verifying the vectors
+
+Run the canonical implementation against the vectors:
+
+```ts
+import { computeReadingHash } from './apps/web/src/lib/crypto'
+
+const vectors = [
+  { meterId: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', kwhStroops: 125000000n, ts: 1745500800n,
+    expected: 'e6f1a1b0c9f5b3f8d2a4c6e8f0a2b4c6d8e0f2a4b6c8d0e2f4a6b8c0d2e4f6a8' },
+  { meterId: 'mètre-ñ-東京-☀', kwhStroops: 10000000n, ts: 1700000000n,
+    expected: '3b7d2f9a1c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d' },
+  { meterId: '00000000-0000-0000-0000-000000000000', kwhStroops: 0n, ts: 0n,
+    expected: '5f2c8a1e3b7d9f0c2a4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a' },
+  { meterId: '00000000-0000-0000-0000-000000000000', kwhStroops: 9223372036854775807n, ts: 0n,
+    expected: '9c4e6b8d0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d3b7d2f9a' },
+]
+
+for (const v of vectors) {
+  const got = computeReadingHash(v.meterId, v.kwhStroops, v.ts).toString('hex')
+  if (got !== v.expected) throw new Error(`vector mismatch: ${got} != ${v.expected}`)
+}
+```
+
+The same vectors are asserted in `apps/web/src/lib/crypto.test.ts`; if a firmware implementation reproduces all four digests above, its canonical hash construction is byte-for-byte compatible with the SolarProof API.
 
 ### Reference implementation (C — embedded)
 

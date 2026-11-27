@@ -30,3 +30,17 @@ refresh_token_rotation_enabled = true
 # Reuse interval (seconds): tolerate clock skew / network retries
 security_refresh_token_reuse_interval = 10
 enable_signup = true
+
+[edge_runtime]
+# Edge Functions runtime — used by the process-anchor-mint function
+enabled = true
+policy = "per_worker"
+# Allow the runtime to hot-reload functions during local development
+inspector_port = 8083
+deno_version = 1
+
+[functions.process-anchor-mint]
+# Async anchor_and_mint job processor, invoked by pg_cron every 30 s via pg_net
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/process-anchor-mint/index.ts"
