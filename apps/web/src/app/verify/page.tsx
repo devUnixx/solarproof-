@@ -129,7 +129,8 @@ export default function VerifyPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const kiosk = searchParams.get('kiosk') === '1'
-  const [query, setQuery] = useState(searchParams.get('id') ?? '')
+  const initialTx = searchParams.get('tx') ?? ''
+  const [query, setQuery] = useState(searchParams.get('id') ?? initialTx)
   const [result, setResult] = useState<ChainOfCustody | null>(null)
   const [pageError, setPageError] = useState<Error | null>(null)
   const [loading, setLoading] = useState(false)
@@ -256,9 +257,8 @@ export default function VerifyPage() {
     }
   }
 
-  async function handleVerify(e: React.FormEvent) {
-    e.preventDefault()
-    const q = query.trim()
+  const runVerify = useCallback(async (rawQuery: string) => {
+    const q = rawQuery.trim()
     if (!q) return
 
     if (TURNSTILE_SITE_KEY && !turnstileToken) {
@@ -271,14 +271,19 @@ export default function VerifyPage() {
     setLoading(true)
     setPageError(null)
     setResult(null)
-    router.replace(`/verify?id=${encodeURIComponent(q)}`)
+    router.replace(`/verify?${kind === 'tx' ? 'tx' : 'id'}=${encodeURIComponent(q)}`)
     try {
       const res = await fetch(`/api/verify?id=${encodeURIComponent(q)}`, {
         headers: turnstileToken ? { 'x-turnstile-token': turnstileToken } : undefined,
       })
       const data = await res.json()
       if (!res.ok) {
-        const message = data.error || 'Unable to verify certificate'
+        const message =
+          res.status === 404
+            ? kind === 'tx'
+              ? 'No certificate found for this transaction hash.'
+              : 'No certificate found for this ID.'
+            : data.error || 'Unable to verify certificate'
         setPageError(new Error(message))
         pushToast({ variant: 'error', title: 'Verification failed', description: message })
         // A rejected token cannot be reused — force a fresh challenge.
@@ -296,7 +301,20 @@ export default function VerifyPage() {
     } finally {
       setLoading(false)
     }
+  }, [router, pushToast])
+
+  async function handleVerify(e: React.FormEvent) {
+    e.preventDefault()
+    await runVerify(query)
   }
+
+  // Auto-submit a ?tx= query param on mount (e.g. arriving from a Stellar Explorer link).
+  useEffect(() => {
+    if (!initialTx || autoSubmittedTx.current === initialTx) return
+    if (classifyQuery(initialTx) !== 'tx') return
+    autoSubmittedTx.current = initialTx
+    void runVerify(initialTx)
+  }, [initialTx, runVerify])
 
   async function copyLink() {
     try {
@@ -366,22 +384,24 @@ export default function VerifyPage() {
             Certificate Verifier
           </h1>
           <p className={subheadingClass}>
-            No login required. Enter a certificate ID, reading hash, or transaction hash.
+            No login required. Enter a certificate ID (UUID) or a Stellar transaction hash.
           </p>
         </div>
       </header>
 
       <form onSubmit={handleVerify} className="mb-8" aria-label="Certificate verification form" noValidate>
         <div className="flex flex-col gap-2 sm:flex-row">
-          <label htmlFor="verify-query" className="sr-only">Certificate ID, reading hash, or transaction hash</label>
+          <label htmlFor="verify-query" className="sr-only">Certificate ID (UUID) or Stellar transaction hash</label>
           <input
             id="verify-query"
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Certificate ID, reading hash, or tx hash…"
+            placeholder="Certificate ID (UUID) or tx hash…"
             aria-required="true"
+            aria-describedby="verify-hint"
             autoComplete="off"
+            spellCheck={false}
             className={inputClass}
           />
           <button
@@ -412,7 +432,7 @@ export default function VerifyPage() {
           </div>
         )}
       </form>
-      <p id="verify-hint" className="sr-only">Enter a certificate ID, reading hash, or transaction hash to verify the chain of custody.</p>
+      <p id="verify-hint" className="sr-only">Enter a certificate ID (UUID) or a 64-character Stellar transaction hash to verify the chain of custody.</p>
 
       <div aria-live="polite" aria-atomic="true" className="sr-only">
         {loading && 'Verifying certificate, please wait.'}
@@ -429,6 +449,12 @@ export default function VerifyPage() {
           <XCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
           {pageError.message}
         </div>
+      )}
+
+      {!loading && !pageError && !result && classifyQuery(query) === 'tx' && (
+        <p className="mb-4 text-xs text-gray-500 dark:text-gray-400">
+          Searching by transaction hash — results appear automatically.
+        </p>
       )}
 
       {loading && (

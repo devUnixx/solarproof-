@@ -1,6 +1,9 @@
 import { createEnv } from '@t3-oss/env-nextjs'
 import { z } from 'zod'
 
+// Server secrets that must be present at boot; a missing value hard-fails startup.
+export const REQUIRED_SERVER_SECRETS = ['INTERNAL_BRIDGE_SECRET'] as const
+
 // Explicit production allowlist. Only these origins are permitted by default.
 export const DEFAULT_CORS_ALLOWED_ORIGINS = [
   'https://solarproof.vercel.app',
@@ -132,3 +135,10 @@ export const env = createEnv({
     EVM_CHAIN_ID: process.env.EVM_CHAIN_ID,
   },
 })
+
+// Startup validator: fail fast if any required server secret is missing.
+for (const key of REQUIRED_SERVER_SECRETS) {
+  if (!process.env[key]) {
+    throw new Error(`Missing required server secret: ${key}`)
+  }
+}
