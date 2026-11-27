@@ -131,10 +131,45 @@ async function fetchAnalytics(params: { date_from?: string; date_to?: string; gr
   return res.json()
 }
 
-async function fetchReadings(): Promise<Reading[]> {
-  const res = await fetch('/api/readings')
+interface ReadingsPage {
+  readings: Reading[]
+  total: number
+  page: number
+  page_size: number
+}
+
+const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
+type PageSize = (typeof PAGE_SIZE_OPTIONS)[number]
+const DEFAULT_PAGE_SIZE: PageSize = 25
+
+function isPageSize(value: number): value is PageSize {
+  return (PAGE_SIZE_OPTIONS as readonly number[]).includes(value)
+}
+
+async function fetchReadings(params: { page: number; page_size: number }): Promise<ReadingsPage> {
+  const query = new URLSearchParams()
+  query.set('page', String(params.page))
+  query.set('page_size', String(params.page_size))
+  const res = await fetch(`/api/readings?${query.toString()}`)
   if (!res.ok) throw new Error('Failed to load readings')
-  return res.json()
+  const data = await res.json()
+  // Support both a paginated envelope and a bare array response.
+  if (Array.isArray(data)) {
+    const total = data.length
+    const start = (params.page - 1) * params.page_size
+    return {
+      readings: data.slice(start, start + params.page_size),
+      total,
+      page: params.page,
+      page_size: params.page_size,
+    }
+  }
+  return {
+    readings: data.readings ?? data.items ?? [],
+    total: data.total ?? 0,
+    page: data.page ?? params.page,
+    page_size: data.page_size ?? params.page_size,
+  }
 }
 
 async function fetchNotifications(): Promise<NotificationsResponse> {
@@ -343,6 +378,38 @@ export default function DashboardPage() {
 
   const { isConnected, error: wsError } = useRealtimeReadings()
   const queryClient = useQueryClient()
+  const router = useRouter()
+  const searchParams = useSearchParams()
+
+  // Pagination state, initialised from the URL for shareable links.
+  const [page, setPage] = useState<number>(() => {
+    const raw = Number(searchParams.get('page'))
+    return Number.isInteger(raw) && raw > 0 ? raw : 1
+  })
+  const [pageSize, setPageSize] = useState<PageSize>(() => {
+    const raw = Number(searchParams.get('page_size'))
+    return isPageSize(raw) ? raw : DEFAULT_PAGE_SIZE
+  })
+
+  // Keep the URL in sync with the current page and page size.
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString())
+    if (page === 1) {
+      params.delete('page')
+    } else {
+      params.set('page', String(page))
+    }
+    if (pageSize === DEFAULT_PAGE_SIZE) {
+      params.delete('page_size')
+    } else {
+      params.set('page_size', String(pageSize))
+    }
+    const nextQuery = params.toString()
+    const currentQuery = searchParams.toString()
+    if (nextQuery !== currentQuery) {
+      router.replace(nextQuery ? `?${nextQuery}` : '?', { scroll: false })
+    }
+  }, [page, pageSize, router, searchParams])
 
   const {
     data: analytics,
@@ -355,14 +422,39 @@ export default function DashboardPage() {
   })
 
   const {
-    data: readings,
+    data: readingsPage,
     isLoading: readingsLoading,
     error: readingsError,
-  } = useQuery({ 
-    queryKey: ['readings'], 
-    queryFn: fetchReadings,
+  } = useQuery({
+    queryKey: ['readings', page, pageSize],
+    queryFn: () => fetchReadings({ page, page_size: pageSize }),
     refetchInterval: isConnected ? false : 30000,
+    placeholderData: (previous) => previous,
   })
+
+  const totalReadings = readingsPage?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(totalReadings / pageSize))
+  const rangeStart = totalReadings === 0 ? 0 : (page - 1) * pageSize + 1
+  const rangeEnd = Math.min(page * pageSize, totalReadings)
+  const canGoPrevious = page > 1
+  const canGoNext = page < totalPages
+
+  const goToPage = useCallback(
+    (next: number) => {
+      setPage(Math.min(Math.max(1, next), totalPages))
+    },
+    [totalPages],
+  )
+
+  const handlePageSizeChange = useCallback((next: PageSize) => {
+    setPageSize(next)
+    setPage(1)
+  }, [])
+
+  // Clamp the current page if the dataset shrinks below it.
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
 
   const {
     data: notificationsData,
@@ -842,8 +934,28 @@ export default function DashboardPage() {
       </section>
 
       {/* Recent Activity */}
-      <section>
-        <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">Recent readings</h2>
+      <section aria-labelledby="readings-heading">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+          <h2 id="readings-heading" className="text-lg font-semibold text-gray-900 dark:text-gray-100">Recent readings</h2>
+          <div className="flex items-center gap-2">
+            <label htmlFor="readings-page-size" className="text-xs font-medium text-gray-600 dark:text-gray-400">
+              Rows per page
+            </label>
+            <select
+              id="readings-page-size"
+              value={pageSize}
+              onChange={(e) => handlePageSizeChange(Number(e.target.value) as PageSize)}
+              className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+            >
+              {PAGE_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>{size}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        {readingsError && (
+          <p role="alert" className="mb-3 text-sm text-red-600 dark:text-red-400">Failed to load readings.</p>
+        )}
         <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">
           <table className="min-w-full divide-y divide-gray-200 bg-white text-sm dark:divide-gray-800 dark:bg-gray-900">
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
@@ -860,10 +972,47 @@ export default function DashboardPage() {
                     </span>
                   </td>
                 </tr>
+              ) : readingsPage?.readings.map((r) => (
+                <MeterReadingRow key={r.id} reading={r} />
               ))}
             </tbody>
           </table>
         </div>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
+          <p className="text-xs text-gray-600 dark:text-gray-400">
+            {totalReadings === 0
+              ? 'No readings'
+              : `${rangeStart.toLocaleString()}–${rangeEnd.toLocaleString()} of ${totalReadings.toLocaleString()}`}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => goToPage(page - 1)}
+              disabled={!canGoPrevious}
+              aria-label="Previous page of readings"
+              className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:text-gray-400 dark:hover:bg-gray-900"
+            >
+              Previous
+            </button>
+            <span className="text-xs text-gray-600 dark:text-gray-400">
+              Page {page} of {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => goToPage(page + 1)}
+              disabled={!canGoNext}
+              aria-label="Next page of readings"
+              className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:text-gray-400 dark:hover:bg-gray-900"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+        <p aria-live="polite" role="status" className="sr-only">
+          {totalReadings === 0
+            ? 'No readings to display.'
+            : `Showing readings ${rangeStart} to ${rangeEnd} of ${totalReadings}. Page ${page} of ${totalPages}.`}
+        </p>
       </section>
     </div>
     </WalletGate>
