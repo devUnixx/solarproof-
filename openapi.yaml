@@ -703,6 +703,7 @@ paths:
         Pagination: pass `cursor` (the `next_cursor` from the previous response)
         to fetch the next page. The `page` parameter is supported for backward
         compatibility but is deprecated — use `cursor` for new integrations.
+        See [ADR-010](docs/adr/010-cursor-pagination.md) for the rationale.
       security: []
       parameters:
         - $ref: '#/components/parameters/limit'
