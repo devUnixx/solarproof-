@@ -5,6 +5,14 @@ import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { locales, LOCALE_LABELS, LOCALE_NAMES, type Locale } from '@/lib/locales'
 
+// Display labels for the language switcher. Kept explicit so the Spanish
+// option always renders as "Español" regardless of the active locale.
+const SWITCHER_LABELS: Record<Locale, string> = {
+  en: 'English',
+  fr: 'Français',
+  es: 'Español',
+}
+
 interface Props {
   current: Locale
 }
@@ -27,8 +35,12 @@ export function LanguageSwitcher({ current }: Props) {
       })
       if (!response.ok) throw new Error('Failed to save locale')
 
-      setActiveLocale(locale)
-      setAnnouncement(t('changed', { language: LOCALE_NAMES[locale] }))
+      // Mirror the server-set cookie on the client so the locale is applied
+      // immediately (and survives a refresh) even before the API response
+      // is processed by middleware.
+      document.cookie = `locale=${locale}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`
+
+      setAnnouncement(`Language changed to ${LOCALE_NAMES[locale]}`)
       startTransition(() => router.refresh())
     } catch {
       setAnnouncement(t('error'))
@@ -56,8 +68,8 @@ export function LanguageSwitcher({ current }: Props) {
         className="cursor-pointer appearance-none rounded-md border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-yellow-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
       >
         {locales.map((l) => (
-          <option key={l} value={l} aria-current={l === activeLocale ? 'true' : undefined}>
-            {LOCALE_LABELS[l]} — {LOCALE_NAMES[l]}
+          <option key={l} value={l}>
+            {SWITCHER_LABELS[l] ?? LOCALE_LABELS[l]} — {LOCALE_NAMES[l]}
           </option>
         ))}
       </select>

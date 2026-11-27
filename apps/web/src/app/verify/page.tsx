@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
-import { Search, CheckCircle, XCircle, Shield, ExternalLink, Copy, Download } from 'lucide-react'
+import { Search, CheckCircle, XCircle, Shield, ExternalLink, Copy, Download, Code } from 'lucide-react'
 import { SectionSkeleton } from '@/components/skeleton'
 import { CopyableText } from '@/components/copy-button'
 import { writeToClipboard } from '@/components/copy-button'
@@ -105,18 +105,45 @@ function buildSteps(data: ChainOfCustody): Step[] {
 
 const KIOSK_INACTIVITY_MS = 60_000
 
+const EMBED_SANDBOX = 'allow-scripts allow-popups allow-popups-to-escape-sandbox'
+const EMBED_WIDTH = 360
+const EMBED_HEIGHT = 420
+
+function buildEmbedCode(certificateId: string, origin: string): string {
+  const src = `${origin}/embed/certificate/${encodeURIComponent(certificateId)}`
+  return [
+    `<iframe`,
+    `  src="${src}"`,
+    `  title="SolarProof verified green energy certificate"`,
+    `  width="${EMBED_WIDTH}"`,
+    `  height="${EMBED_HEIGHT}"`,
+    `  style="border:0;max-width:100%"`,
+    `  loading="lazy"`,
+    `  sandbox="${EMBED_SANDBOX}"`,
+    `  referrerpolicy="no-referrer-when-downgrade"`,
+    `></iframe>`,
+  ].join('\n')
+}
+
 export default function VerifyPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const kiosk = searchParams.get('kiosk') === '1'
-  const [query, setQuery] = useState(searchParams.get('id') ?? '')
+  const initialTx = searchParams.get('tx') ?? ''
+  const [query, setQuery] = useState(searchParams.get('id') ?? initialTx)
   const [result, setResult] = useState<ChainOfCustody | null>(null)
   const [pageError, setPageError] = useState<Error | null>(null)
   const [loading, setLoading] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [embedCopied, setEmbedCopied] = useState(false)
   const [downloadError, setDownloadError] = useState<string | null>(null)
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null)
+  const [turnstileError, setTurnstileError] = useState<string | null>(null)
+  const [turnstileReady, setTurnstileReady] = useState(false)
   const { pushToast } = useToast()
   const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const turnstileContainerRef = useRef<HTMLDivElement | null>(null)
+  const turnstileWidgetId = useRef<string | null>(null)
 
   const resetKiosk = useCallback(() => {
     setQuery('')
@@ -124,9 +151,56 @@ export default function VerifyPage() {
     setPageError(null)
     setLoading(false)
     setCopied(false)
+    setEmbedCopied(false)
     setDownloadError(null)
+    setTurnstileToken(null)
+    setTurnstileError(null)
+    if (turnstileWidgetId.current && window.turnstile) {
+      window.turnstile.reset(turnstileWidgetId.current)
+    }
     router.replace('/verify?kiosk=1')
   }, [router])
+
+  const renderTurnstile = useCallback(() => {
+    if (!TURNSTILE_SITE_KEY) return
+    if (!window.turnstile || !turnstileContainerRef.current) return
+    if (turnstileWidgetId.current) return
+
+    turnstileWidgetId.current = window.turnstile.render(turnstileContainerRef.current, {
+      sitekey: TURNSTILE_SITE_KEY,
+      theme: 'auto',
+      callback: (token: string) => {
+        setTurnstileToken(token)
+        setTurnstileError(null)
+      },
+      'error-callback': () => {
+        setTurnstileToken(null)
+        setTurnstileError('Bot protection challenge failed. Please retry.')
+      },
+      'expired-callback': () => {
+        setTurnstileToken(null)
+        setTurnstileError('Bot protection challenge expired. Please retry.')
+      },
+      'timeout-callback': () => {
+        setTurnstileToken(null)
+        setTurnstileError('Bot protection challenge timed out. Please retry.')
+      },
+    })
+    setTurnstileReady(true)
+  }, [])
+
+  useEffect(() => {
+    if (!TURNSTILE_SITE_KEY) return
+    if (window.turnstile) {
+      renderTurnstile()
+    }
+    return () => {
+      if (turnstileWidgetId.current && window.turnstile) {
+        window.turnstile.remove(turnstileWidgetId.current)
+        turnstileWidgetId.current = null
+      }
+    }
+  }, [renderTurnstile])
 
   useEffect(() => {
     if (!kiosk) return
@@ -183,21 +257,40 @@ export default function VerifyPage() {
     }
   }
 
-  async function handleVerify(e: React.FormEvent) {
-    e.preventDefault()
-    const q = query.trim()
+  const runVerify = useCallback(async (rawQuery: string) => {
+    const q = rawQuery.trim()
     if (!q) return
+
+    if (TURNSTILE_SITE_KEY && !turnstileToken) {
+      const message = turnstileError ?? 'Please complete the bot protection challenge before verifying.'
+      setPageError(new Error(message))
+      pushToast({ variant: 'error', title: 'Verification blocked', description: message })
+      return
+    }
+
     setLoading(true)
     setPageError(null)
     setResult(null)
-    router.replace(`/verify?id=${encodeURIComponent(q)}`)
+    router.replace(`/verify?${kind === 'tx' ? 'tx' : 'id'}=${encodeURIComponent(q)}`)
     try {
-      const res = await fetch(`/api/verify?id=${encodeURIComponent(q)}`)
+      const res = await fetch(`/api/verify?id=${encodeURIComponent(q)}`, {
+        headers: turnstileToken ? { 'x-turnstile-token': turnstileToken } : undefined,
+      })
       const data = await res.json()
       if (!res.ok) {
-        const message = data.error || 'Unable to verify certificate'
+        const message =
+          res.status === 404
+            ? kind === 'tx'
+              ? 'No certificate found for this transaction hash.'
+              : 'No certificate found for this ID.'
+            : data.error || 'Unable to verify certificate'
         setPageError(new Error(message))
         pushToast({ variant: 'error', title: 'Verification failed', description: message })
+        // A rejected token cannot be reused — force a fresh challenge.
+        if (res.status === 403 && turnstileWidgetId.current && window.turnstile) {
+          setTurnstileToken(null)
+          window.turnstile.reset(turnstileWidgetId.current)
+        }
         return
       }
 
@@ -208,7 +301,20 @@ export default function VerifyPage() {
     } finally {
       setLoading(false)
     }
+  }, [router, pushToast])
+
+  async function handleVerify(e: React.FormEvent) {
+    e.preventDefault()
+    await runVerify(query)
   }
+
+  // Auto-submit a ?tx= query param on mount (e.g. arriving from a Stellar Explorer link).
+  useEffect(() => {
+    if (!initialTx || autoSubmittedTx.current === initialTx) return
+    if (classifyQuery(initialTx) !== 'tx') return
+    autoSubmittedTx.current = initialTx
+    void runVerify(initialTx)
+  }, [initialTx, runVerify])
 
   async function copyLink() {
     try {
@@ -221,8 +327,25 @@ export default function VerifyPage() {
     }
   }
 
+  async function copyEmbedCode() {
+    if (!result) return
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
+    const code = buildEmbedCode(result.certificate.id, origin)
+    try {
+      await writeToClipboard(code)
+      setEmbedCopied(true)
+      pushToast({ variant: 'success', title: 'Embed code copied', description: 'Paste it into your site’s HTML.' })
+      setTimeout(() => setEmbedCopied(false), 2000)
+    } catch {
+      pushToast({ variant: 'error', title: 'Copy failed', description: 'Select the code below and copy it manually.' })
+    }
+  }
+
   const steps = result ? buildSteps(result) : null
   const allPass = steps?.every((s) => s.status !== 'fail')
+  const embedCode = result && typeof window !== 'undefined'
+    ? buildEmbedCode(result.certificate.id, window.location.origin)
+    : ''
 
   const containerClass = kiosk
     ? 'min-h-screen w-full px-6 py-10 sm:px-10 sm:py-14'
@@ -242,6 +365,13 @@ export default function VerifyPage() {
 
   return (
     <div className={containerClass}>
+      {TURNSTILE_SITE_KEY && (
+        <Script
+          src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+          strategy="afterInteractive"
+          onLoad={renderTurnstile}
+        />
+      )}
       {kiosk && (
         <p role="status" aria-live="polite" className="sr-only">
           Kiosk mode active. The screen will automatically reset after 60 seconds of inactivity.
@@ -254,27 +384,29 @@ export default function VerifyPage() {
             Certificate Verifier
           </h1>
           <p className={subheadingClass}>
-            No login required. Enter a certificate ID, reading hash, or transaction hash.
+            No login required. Enter a certificate ID (UUID) or a Stellar transaction hash.
           </p>
         </div>
       </header>
 
       <form onSubmit={handleVerify} className="mb-8" aria-label="Certificate verification form" noValidate>
         <div className="flex flex-col gap-2 sm:flex-row">
-          <label htmlFor="verify-query" className="sr-only">Certificate ID, reading hash, or transaction hash</label>
+          <label htmlFor="verify-query" className="sr-only">Certificate ID (UUID) or Stellar transaction hash</label>
           <input
             id="verify-query"
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Certificate ID, reading hash, or tx hash…"
+            placeholder="Certificate ID (UUID) or tx hash…"
             aria-required="true"
+            aria-describedby="verify-hint"
             autoComplete="off"
+            spellCheck={false}
             className={inputClass}
           />
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || (Boolean(TURNSTILE_SITE_KEY) && !turnstileToken)}
             aria-busy={loading}
             className={submitClass}
           >
@@ -282,8 +414,25 @@ export default function VerifyPage() {
             {loading ? 'Verifying…' : 'Verify'}
           </button>
         </div>
+        {TURNSTILE_SITE_KEY && (
+          <div className="mt-3">
+            <div
+              ref={turnstileContainerRef}
+              aria-label="Bot protection challenge"
+              aria-busy={!turnstileReady}
+            />
+            {turnstileError && (
+              <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">
+                {turnstileError}
+              </p>
+            )}
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Protected by Cloudflare Turnstile. Complete the challenge to verify a certificate.
+            </p>
+          </div>
+        )}
       </form>
-      <p id="verify-hint" className="sr-only">Enter a certificate ID, reading hash, or transaction hash to verify the chain of custody.</p>
+      <p id="verify-hint" className="sr-only">Enter a certificate ID (UUID) or a 64-character Stellar transaction hash to verify the chain of custody.</p>
 
       <div aria-live="polite" aria-atomic="true" className="sr-only">
         {loading && 'Verifying certificate, please wait.'}
@@ -300,6 +449,12 @@ export default function VerifyPage() {
           <XCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
           {pageError.message}
         </div>
+      )}
+
+      {!loading && !pageError && !result && classifyQuery(query) === 'tx' && (
+        <p className="mb-4 text-xs text-gray-500 dark:text-gray-400">
+          Searching by transaction hash — results appear automatically.
+        </p>
       )}
 
       {loading && (
@@ -438,6 +593,29 @@ export default function VerifyPage() {
                 value={new Date(result.meter_proof.timestamp).toLocaleString()}
               />
               <Row label="Ed25519 verified" value="✓ Valid" />
+            </Section>
+          )}
+
+          {/* Embed code generator */}
+          {!kiosk && (
+            <Section title="Embed this certificate">
+              <div className="space-y-3">
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Paste this snippet into any website to show a verified green energy widget that links back to SolarProof.
+                </p>
+                <pre className="overflow-x-auto rounded-lg bg-gray-50 p-3 text-xs text-gray-700 dark:bg-gray-950 dark:text-gray-300">
+                  <code>{embedCode}</code>
+                </pre>
+                <button
+                  onClick={copyEmbedCode}
+                  aria-label="Copy iframe embed code"
+                  aria-pressed={embedCopied}
+                  className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:ring-offset-2 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  <Code className="h-4 w-4" aria-hidden="true" />
+                  <span aria-live="polite">{embedCopied ? 'Copied!' : 'Copy embed code'}</span>
+                </button>
+              </div>
             </Section>
           )}
 

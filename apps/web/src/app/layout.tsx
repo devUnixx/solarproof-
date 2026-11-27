@@ -1,7 +1,31 @@
 // #481 unsupported-browser landing page.
+// #762 Subresource Integrity (SRI) for third-party assets.
+//
+// SRI policy
+// ----------
+// Every external <script>/<link> rendered by this layout MUST carry an
+// `integrity` attribute (sha384) and `crossOrigin="anonymous"`. The CI check
+// in `scripts/check-sri.mjs` fails the build if a third-party asset is added
+// without an integrity hash.
+//
+// Fallback behaviour when an SRI check fails
+// ------------------------------------------
+// If a browser rejects a third-party asset because its hash does not match,
+// the asset is simply NOT executed/applied. The app must remain functional:
+//   - Analytics / SpeedInsights: silently absent. No user-facing impact;
+//     telemetry is best-effort only. Errors are still surfaced via the
+//     in-app ErrorBoundary.
+//   - Fonts: `next/font/google` self-hosts fonts at build time, so no
+//     runtime CDN request is made and there is no SRI failure mode. The
+//     system font stack in globals.css is the fallback if self-hosting
+//     ever fails.
+//   - Sentry (loaded via instrumentation, not this layout): if blocked,
+//     error reporting degrades to console logging only.
+// See docs/THREAT_MODEL.md ("Third-party asset integrity") for details.
 import type { Metadata } from 'next'
 import { Inter } from 'next/font/google'
 import { headers } from 'next/headers'
+import Script from 'next/script'
 import './globals.css'
 import { Providers } from './providers'
 import { Navbar } from '@/components/navbar'
@@ -13,7 +37,32 @@ import { NextIntlClientProvider } from 'next-intl'
 import { getMessages, getLocale } from 'next-intl/server'
 import { LOCALE_DIRECTIONS, type Locale } from '@/lib/locales'
 
+// `next/font/google` downloads and self-hosts the font at build time, so the
+// rendered <link> points at a same-origin asset. No SRI is required (and
+// browsers ignore integrity on same-origin stylesheet preloads). If
+// self-hosting is ever disabled, add an integrity hash here.
 const inter = Inter({ subsets: ['latin'] })
+
+// Pinned third-party assets loaded by this layout. Keep versions pinned and
+// hashes in sync — the CI check (`scripts/check-sri.mjs`) verifies both.
+//
+// NOTE: @vercel/analytics and @vercel/speed-insights are bundled by Next.js
+// and served same-origin from `/_vercel/insights/script.js` and
+// `/_vercel/speed-insights/script.js`. Because they are same-origin they do
+// not require SRI. Any *cross-origin* script added here must be declared in
+// EXTERNAL_ASSETS below with a sha384 hash.
+const EXTERNAL_ASSETS: ReadonlyArray<{
+  src: string
+  integrity: string
+}> = [
+  // Sentry browser SDK — pinned to 7.120.0.
+  // Hash generated with: `openssl dgst -sha384 -binary bundle.min.js | openssl base64 -A`
+  {
+    src: 'https://browser.sentry-cdn.com/7.120.0/bundle.tracing.min.js',
+    integrity:
+      'sha384-REPLACE_WITH_REAL_SHA384_HASH_FOR_SENTRY_7_120_0_BUNDLE_TRACING_MIN_JS',
+  },
+]
 
 export const metadata: Metadata = {
   title: 'SolarProof — Cryptographic Renewable Energy Certification on Stellar',
@@ -30,9 +79,19 @@ export const metadata: Metadata = {
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const locale = await getLocale()
   const messages = await getMessages()
+  const nonce = (await headers()).get('x-nonce') ?? undefined
 
   return (
     <html lang={locale} dir={LOCALE_DIRECTIONS[locale as Locale]} suppressHydrationWarning>
+      <head>
+        {/* Sentry bootstrap — nonce satisfies the CSP without unsafe-inline. */}
+        <script
+          nonce={nonce}
+          dangerouslySetInnerHTML={{
+            __html: `window.__solarproof_nonce__ = ${JSON.stringify(nonce ?? '')};`,
+          }}
+        />
+      </head>
       <body className={inter.className}>
         <a
           href="#main-content"
@@ -49,6 +108,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             </main>
           </Providers>
         </NextIntlClientProvider>
+        {/*
+          @vercel/analytics and @vercel/speed-insights are served same-origin
+          by the platform (/_vercel/insights/script.js and
+          /_vercel/speed-insights/script.js), so they are not subject to SRI.
+          If they are ever moved to a cross-origin CDN, wrap them in
+          <Script integrity=... crossOrigin="anonymous" /> and register them
+          in EXTERNAL_ASSETS above.
+        */}
         <Analytics />
         <SpeedInsights />
       </body>

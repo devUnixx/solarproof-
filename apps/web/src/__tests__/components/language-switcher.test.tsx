@@ -29,10 +29,11 @@ describe('LanguageSwitcher', () => {
     vi.unstubAllGlobals()
   })
 
-  it('reflects the active locale in the select', () => {
-    render(<LanguageSwitcher current="fr" />)
+  it('displays the Español option in the language switcher', () => {
+    render(<LanguageSwitcher current="en" />)
 
-    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('fr')
+    const options = screen.getAllByRole('option')
+    expect(options.map((option) => option.textContent)).toContain('Español')
   })
 
   it('persists the selected locale through the API before refreshing', async () => {

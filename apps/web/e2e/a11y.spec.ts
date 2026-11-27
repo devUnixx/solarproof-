@@ -29,6 +29,11 @@ test.describe('Accessibility (axe-core)', () => {
     await checkA11y(page)
   })
 
+  test('dashboard page has no critical/serious violations', async ({ page }) => {
+    await page.goto('/dashboard')
+    await checkA11y(page)
+  })
+
   test('verify kiosk mode has no critical/serious violations', async ({ page }) => {
     await page.goto('/verify?kiosk=1')
     await checkA11y(page)

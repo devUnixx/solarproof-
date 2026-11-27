@@ -18,10 +18,10 @@ import { useTheme } from 'next-themes'
 import { Zap, Award, Leaf, TrendingUp, Download, Bell } from 'lucide-react'
 import { AccessibleLegend } from '@/components/accessible-chart-legend'
 import { StatCardSkeleton, ChartSkeleton, TableRowSkeleton } from '@/components/skeleton'
-import { useState, useMemo, memo } from 'react'
+import { useState, useMemo, memo, useEffect } from 'react'
 import { useRealtimeReadings } from '@/hooks/use-realtime-readings'
 import { ErrorBoundary } from '@/components/error-boundary'
-import { DashboardEmptyState } from '@/components/empty-states/dashboard-empty-state'
+import { usePersistentFilters } from '@/hooks/use-persistent-filters'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -131,10 +131,45 @@ async function fetchAnalytics(params: { date_from?: string; date_to?: string; gr
   return res.json()
 }
 
-async function fetchReadings(): Promise<Reading[]> {
-  const res = await fetch('/api/readings')
+interface ReadingsPage {
+  readings: Reading[]
+  total: number
+  page: number
+  page_size: number
+}
+
+const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
+type PageSize = (typeof PAGE_SIZE_OPTIONS)[number]
+const DEFAULT_PAGE_SIZE: PageSize = 25
+
+function isPageSize(value: number): value is PageSize {
+  return (PAGE_SIZE_OPTIONS as readonly number[]).includes(value)
+}
+
+async function fetchReadings(params: { page: number; page_size: number }): Promise<ReadingsPage> {
+  const query = new URLSearchParams()
+  query.set('page', String(params.page))
+  query.set('page_size', String(params.page_size))
+  const res = await fetch(`/api/readings?${query.toString()}`)
   if (!res.ok) throw new Error('Failed to load readings')
-  return res.json()
+  const data = await res.json()
+  // Support both a paginated envelope and a bare array response.
+  if (Array.isArray(data)) {
+    const total = data.length
+    const start = (params.page - 1) * params.page_size
+    return {
+      readings: data.slice(start, start + params.page_size),
+      total,
+      page: params.page,
+      page_size: params.page_size,
+    }
+  }
+  return {
+    readings: data.readings ?? data.items ?? [],
+    total: data.total ?? 0,
+    page: data.page ?? params.page,
+    page_size: data.page_size ?? params.page_size,
+  }
 }
 
 async function fetchNotifications(): Promise<NotificationsResponse> {
@@ -190,19 +225,61 @@ function useChartColors() {
   const dark = resolvedTheme === 'dark'
   return {
     grid: dark ? '#374151' : '#e5e7eb',
-    text: dark ? '#9ca3af' : '#6b7280',
-    area: '#f59e0b',
+    // Axis text: #4b5563 on white ≈ 7.5:1, #d1d5db on #111827 ≈ 9.6:1
+    text: dark ? '#d1d5db' : '#4b5563',
+    // Amber area stroke: #b45309 on white ≈ 4.8:1, #fbbf24 on #111827 ≈ 8.6:1
+    area: dark ? '#fbbf24' : '#b45309',
     areaFill: dark ? '#f59e0b33' : '#fef3c7',
-    bar1: '#f59e0b',
-    bar2: '#0ea5e9',
-    line1: '#10b981', // green
-    line2: '#ef4444', // red
+    bar1: dark ? '#fbbf24' : '#b45309',
+    bar2: dark ? '#38bdf8' : '#0369a1',
+    // Green line: #047857 on white ≈ 5.5:1, #34d399 on #111827 ≈ 8.1:1
+    line1: dark ? '#34d399' : '#047857',
+    // Red line: #b91c1c on white ≈ 5.9:1, #f87171 on #111827 ≈ 5.6:1
+    line2: dark ? '#f87171' : '#b91c1c',
     tooltip: {
       bg: dark ? '#1f2937' : '#ffffff',
       border: dark ? '#374151' : '#e5e7eb',
       text: dark ? '#f9fafb' : '#111827',
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Visually hidden data table (screen-reader fallback for charts)
+// ---------------------------------------------------------------------------
+interface ChartDataTableProps {
+  id: string
+  caption: string
+  columns: { key: string; label: string }[]
+  rows: Record<string, string | number>[]
+}
+
+function ChartDataTable({ id, caption, columns, rows }: ChartDataTableProps) {
+  return (
+    <table id={id} className="sr-only">
+      <caption>{caption}</caption>
+      <thead>
+        <tr>
+          {columns.map((col) => (
+            <th key={col.key} scope="col">{col.label}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.length === 0 ? (
+          <tr>
+            <td colSpan={columns.length}>No data available.</td>
+          </tr>
+        ) : rows.map((row, i) => (
+          <tr key={i}>
+            {columns.map((col) => (
+              <td key={col.key}>{row[col.key]}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -228,12 +305,62 @@ function exportCsv(data: object[], filename: string) {
 export default function DashboardPage() {
   const [granularity, setGranularity] = useState<Period>('day')
   const [range, setRange] = useState<'30d' | '90d' | 'ytd' | 'all'>('30d')
+  const [meterIds, setMeterIds] = useState<string[]>([])
+  const [pageSize, setPageSize] = useState<number>(10)
   const [reportMonth, setReportMonth] = useState<string>(currentMonth())
   const [reportDownloading, setReportDownloading] = useState(false)
   const [reportError, setReportError] = useState<string | null>(null)
   // TODO: replace with the cooperative membership/role from the session context.
   const isCooperative = true
-  
+
+  const {
+    filters: persistedFilters,
+    setFilter: setPersistedFilter,
+    resetFilters,
+    hydrated: filtersHydrated,
+  } = usePersistentFilters('dashboard', {
+    range: '30d',
+    meterIds: [] as string[],
+    pageSize: 10,
+  })
+
+  // Restore persisted filter values once the hook has hydrated from storage.
+  useEffect(() => {
+    if (!filtersHydrated) return
+    const persistedRange = persistedFilters.range
+    if (persistedRange === '30d' || persistedRange === '90d' || persistedRange === 'ytd' || persistedRange === 'all') {
+      setRange(persistedRange)
+    }
+    if (Array.isArray(persistedFilters.meterIds)) {
+      setMeterIds(persistedFilters.meterIds)
+    }
+    if (typeof persistedFilters.pageSize === 'number' && persistedFilters.pageSize > 0) {
+      setPageSize(persistedFilters.pageSize)
+    }
+  }, [filtersHydrated, persistedFilters.range, persistedFilters.meterIds, persistedFilters.pageSize])
+
+  const handleRangeChange = (next: '30d' | '90d' | 'ytd' | 'all') => {
+    setRange(next)
+    setPersistedFilter('range', next)
+  }
+
+  const handleMeterIdsChange = (next: string[]) => {
+    setMeterIds(next)
+    setPersistedFilter('meterIds', next)
+  }
+
+  const handlePageSizeChange = (next: number) => {
+    setPageSize(next)
+    setPersistedFilter('pageSize', next)
+  }
+
+  const handleClearFilters = () => {
+    resetFilters()
+    setRange('30d')
+    setMeterIds([])
+    setPageSize(10)
+  }
+
   const dateParams = useMemo(() => {
     const now = new Date()
     let from: Date | undefined
@@ -251,6 +378,38 @@ export default function DashboardPage() {
 
   const { isConnected, error: wsError } = useRealtimeReadings()
   const queryClient = useQueryClient()
+  const router = useRouter()
+  const searchParams = useSearchParams()
+
+  // Pagination state, initialised from the URL for shareable links.
+  const [page, setPage] = useState<number>(() => {
+    const raw = Number(searchParams.get('page'))
+    return Number.isInteger(raw) && raw > 0 ? raw : 1
+  })
+  const [pageSize, setPageSize] = useState<PageSize>(() => {
+    const raw = Number(searchParams.get('page_size'))
+    return isPageSize(raw) ? raw : DEFAULT_PAGE_SIZE
+  })
+
+  // Keep the URL in sync with the current page and page size.
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString())
+    if (page === 1) {
+      params.delete('page')
+    } else {
+      params.set('page', String(page))
+    }
+    if (pageSize === DEFAULT_PAGE_SIZE) {
+      params.delete('page_size')
+    } else {
+      params.set('page_size', String(pageSize))
+    }
+    const nextQuery = params.toString()
+    const currentQuery = searchParams.toString()
+    if (nextQuery !== currentQuery) {
+      router.replace(nextQuery ? `?${nextQuery}` : '?', { scroll: false })
+    }
+  }, [page, pageSize, router, searchParams])
 
   const {
     data: analytics,
@@ -258,18 +417,44 @@ export default function DashboardPage() {
     error: analyticsError,
   } = useQuery({ 
     queryKey: ['analytics', dateParams.date_from, dateParams.date_to, dateParams.granularity],
-    queryFn: () => fetchAnalytics(dateParams) 
+    queryFn: () => fetchAnalytics(dateParams),
+    enabled: filtersHydrated,
   })
 
   const {
-    data: readings,
+    data: readingsPage,
     isLoading: readingsLoading,
     error: readingsError,
-  } = useQuery({ 
-    queryKey: ['readings'], 
-    queryFn: fetchReadings,
+  } = useQuery({
+    queryKey: ['readings', page, pageSize],
+    queryFn: () => fetchReadings({ page, page_size: pageSize }),
     refetchInterval: isConnected ? false : 30000,
+    placeholderData: (previous) => previous,
   })
+
+  const totalReadings = readingsPage?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(totalReadings / pageSize))
+  const rangeStart = totalReadings === 0 ? 0 : (page - 1) * pageSize + 1
+  const rangeEnd = Math.min(page * pageSize, totalReadings)
+  const canGoPrevious = page > 1
+  const canGoNext = page < totalPages
+
+  const goToPage = useCallback(
+    (next: number) => {
+      setPage(Math.min(Math.max(1, next), totalPages))
+    },
+    [totalPages],
+  )
+
+  const handlePageSizeChange = useCallback((next: PageSize) => {
+    setPageSize(next)
+    setPage(1)
+  }, [])
+
+  // Clamp the current page if the dataset shrinks below it.
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
 
   const {
     data: notificationsData,
@@ -303,6 +488,20 @@ export default function DashboardPage() {
     }))
   }, [analytics?.trends, granularity])
 
+  const generationTableRows = useMemo(
+    () => chartData.map((d) => ({ date: d.date, kwh: d.kwh.toLocaleString() })),
+    [chartData],
+  )
+
+  const certsTableRows = useMemo(
+    () => chartData.map((d) => ({
+      date: d.date,
+      issued: d.certs_issued.toLocaleString(),
+      retired: d.certs_retired.toLocaleString(),
+    })),
+    [chartData],
+  )
+
   const stats = analytics?.summary || { total_kwh: 0, certificates_issued: 0, certificates_retired: 0, active_meters: 0 }
 
   return (
@@ -314,13 +513,14 @@ export default function DashboardPage() {
           <p className="text-sm text-gray-500 dark:text-gray-400">Energy generation and certificate trends.</p>
         </div>
         
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {/* Range Selector */}
           <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-1 dark:border-gray-800 dark:bg-gray-950">
             {(['30d', '90d', 'ytd', 'all'] as const).map((r) => (
               <button
                 key={r}
-                onClick={() => setRange(r)}
+                onClick={() => handleRangeChange(r)}
+                aria-pressed={range === r}
                 className={`rounded-md px-2.5 py-1 text-xs font-medium uppercase transition-colors ${
                   range === r 
                     ? 'bg-yellow-400 text-gray-900' 
@@ -331,6 +531,42 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
+
+          {/* Meter Selector */}
+          <label htmlFor="dashboard-meter-filter" className="sr-only">Filter by meter</label>
+          <select
+            id="dashboard-meter-filter"
+            multiple
+            value={meterIds}
+            onChange={(e) =>
+              handleMeterIdsChange(Array.from(e.target.selectedOptions, (o) => o.value))
+            }
+            className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-900 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
+          >
+            {(analytics?.meter_stats ?? []).map((m) => (
+              <option key={m.meter_id} value={m.meter_id}>{m.meter_name}</option>
+            ))}
+          </select>
+
+          {/* Page size */}
+          <label htmlFor="dashboard-page-size" className="sr-only">Rows per page</label>
+          <select
+            id="dashboard-page-size"
+            value={pageSize}
+            onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+            className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-900 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
+          >
+            {[10, 25, 50].map((size) => (
+              <option key={size} value={size}>{size} / page</option>
+            ))}
+          </select>
+
+          <button
+            onClick={handleClearFilters}
+            className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-400 dark:hover:bg-gray-900"
+          >
+            Clear filters
+          </button>
 
           <div className="h-6 w-px bg-gray-200 dark:bg-gray-800" />
 
@@ -396,8 +632,10 @@ export default function DashboardPage() {
             <div
               className="h-64 w-full"
               role="img"
+              tabIndex={0}
+              aria-label="Generation trend: kWh output over time"
               aria-labelledby="generation-trend-title"
-              aria-describedby="generation-trend-desc generation-trend-legend"
+              aria-describedby="generation-trend-desc generation-trend-legend generation-trend-table"
             >
               {analyticsLoading ? <ChartSkeleton title="Generation trend" /> : (
                 <ResponsiveContainer width="100%" height="100%">
@@ -413,6 +651,15 @@ export default function DashboardPage() {
                 </ResponsiveContainer>
               )}
             </div>
+            <ChartDataTable
+              id="generation-trend-table"
+              caption="Generation trend data: kWh output per period"
+              columns={[
+                { key: 'date', label: 'Period' },
+                { key: 'kwh', label: 'kWh' },
+              ]}
+              rows={generationTableRows}
+            />
           </figure>
         </div>
         </ErrorBoundary>
@@ -447,8 +694,10 @@ export default function DashboardPage() {
             <div
               className="h-64 w-full"
               role="img"
+              tabIndex={0}
+              aria-label="Certificates activity: issued versus retired certificates over time"
               aria-labelledby="certs-activity-title"
-              aria-describedby="certs-activity-desc"
+              aria-describedby="certs-activity-desc certs-activity-table"
             >
               {analyticsLoading ? <ChartSkeleton title="Certificates activity" /> : (
                 <ResponsiveContainer width="100%" height="100%">
@@ -475,6 +724,16 @@ export default function DashboardPage() {
                 </ResponsiveContainer>
               )}
             </div>
+            <ChartDataTable
+              id="certs-activity-table"
+              caption="Certificates activity data: issued and retired certificates per period"
+              columns={[
+                { key: 'date', label: 'Period' },
+                { key: 'issued', label: 'Issued' },
+                { key: 'retired', label: 'Retired' },
+              ]}
+              rows={certsTableRows}
+            />
           </figure>
         </div>
         </ErrorBoundary>
@@ -575,7 +834,10 @@ export default function DashboardPage() {
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
               {analyticsLoading ? (
                 <><TableRowSkeleton cols={5} /><TableRowSkeleton cols={5} /><TableRowSkeleton cols={5} /></>
-              ) : analytics?.meter_stats.map((m) => (
+              ) : (analytics?.meter_stats ?? [])
+                .filter((m) => meterIds.length === 0 || meterIds.includes(m.meter_id))
+                .slice(0, pageSize)
+                .map((m) => (
                 <tr key={m.meter_id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/40">
                   <td className="px-6 py-4">
                     <div className="font-medium text-gray-900 dark:text-gray-100">{m.meter_name}</div>
@@ -644,7 +906,7 @@ export default function DashboardPage() {
                     No certificate alerts yet.
                   </td>
                 </tr>
-              ) : notifications.slice(0, 10).map((n) => (
+              ) : notifications.slice(0, pageSize).map((n) => (
                 <tr
                   key={n.id}
                   onClick={() => {
@@ -672,17 +934,34 @@ export default function DashboardPage() {
       </section>
 
       {/* Recent Activity */}
-      <section>
-        <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">Recent readings</h2>
-        {!readingsLoading && !readingsError && (readings?.length ?? 0) === 0 ? (
-          <DashboardEmptyState />
-        ) : (
+      <section aria-labelledby="readings-heading">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+          <h2 id="readings-heading" className="text-lg font-semibold text-gray-900 dark:text-gray-100">Recent readings</h2>
+          <div className="flex items-center gap-2">
+            <label htmlFor="readings-page-size" className="text-xs font-medium text-gray-600 dark:text-gray-400">
+              Rows per page
+            </label>
+            <select
+              id="readings-page-size"
+              value={pageSize}
+              onChange={(e) => handlePageSizeChange(Number(e.target.value) as PageSize)}
+              className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+            >
+              {PAGE_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>{size}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        {readingsError && (
+          <p role="alert" className="mb-3 text-sm text-red-600 dark:text-red-400">Failed to load readings.</p>
+        )}
         <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">
           <table className="min-w-full divide-y divide-gray-200 bg-white text-sm dark:divide-gray-800 dark:bg-gray-900">
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
               {readingsLoading ? (
                 <><TableRowSkeleton cols={4} /><TableRowSkeleton cols={4} /></>
-              ) : readings?.slice(0, 10).map((r) => (
+              ) : readings?.slice(0, pageSize).map((r) => (
                 <tr key={r.id}>
                   <td className="px-6 py-3 font-mono text-[10px] text-gray-500">{r.id}</td>
                   <td className="px-6 py-3 text-gray-900 dark:text-gray-100 font-medium">{r.kwh.toFixed(3)} kWh</td>
@@ -693,11 +972,47 @@ export default function DashboardPage() {
                     </span>
                   </td>
                 </tr>
+              ) : readingsPage?.readings.map((r) => (
+                <MeterReadingRow key={r.id} reading={r} />
               ))}
             </tbody>
           </table>
         </div>
-        )}
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
+          <p className="text-xs text-gray-600 dark:text-gray-400">
+            {totalReadings === 0
+              ? 'No readings'
+              : `${rangeStart.toLocaleString()}–${rangeEnd.toLocaleString()} of ${totalReadings.toLocaleString()}`}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => goToPage(page - 1)}
+              disabled={!canGoPrevious}
+              aria-label="Previous page of readings"
+              className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:text-gray-400 dark:hover:bg-gray-900"
+            >
+              Previous
+            </button>
+            <span className="text-xs text-gray-600 dark:text-gray-400">
+              Page {page} of {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => goToPage(page + 1)}
+              disabled={!canGoNext}
+              aria-label="Next page of readings"
+              className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:text-gray-400 dark:hover:bg-gray-900"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+        <p aria-live="polite" role="status" className="sr-only">
+          {totalReadings === 0
+            ? 'No readings to display.'
+            : `Showing readings ${rangeStart} to ${rangeEnd} of ${totalReadings}. Page ${page} of ${totalPages}.`}
+        </p>
       </section>
     </div>
     </WalletGate>

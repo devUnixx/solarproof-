@@ -13,6 +13,7 @@
     "e2e": "pnpm --filter @solarproof/web exec playwright test",
     "storybook": "pnpm --filter @solarproof/web storybook",
     "integration:test": "node scripts/local-soroban-integration.mjs",
+    "lighthouse": "lhci autorun",
     "bridge:dev": "pnpm --filter @solarproof/bridge dev",
     "bridge:build": "pnpm --filter @solarproof/bridge build",
     "bridge:start": "pnpm --filter @solarproof/bridge start",
@@ -22,6 +23,7 @@
     "otel:dashboard": "node scripts/validate-otel-dashboard.mjs"
   },
   "devDependencies": {
+    "@lhci/cli": "^0.14.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/auto-instrumentations-node": "^0.67.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.208.0",

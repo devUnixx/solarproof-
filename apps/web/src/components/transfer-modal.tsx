@@ -96,7 +96,7 @@ export function TransferModal({ certificateId, kwh, onConfirm, onClose }: Props)
           <button
             onClick={onClose}
             disabled={submitting}
-            aria-label="Close transfer certificate dialog"
+            aria-label="Close transfer modal"
             className="rounded p-1 text-gray-400 hover:text-gray-600 disabled:cursor-not-allowed dark:hover:text-gray-200"
           >
             <X className="h-4 w-4" aria-hidden="true" />

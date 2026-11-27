@@ -1,6 +1,11 @@
 /**
  * Job queue powered by BullMQ + Redis.
  *
+ * Uses the QUEUE Redis instance (REDIS_QUEUE_URL, port 6380 locally) — NOT the cache instance.
+ * The queue instance uses `noeviction` policy so job keys are never silently evicted under memory
+ * pressure. The cache instance uses `allkeys-lru` and must not be used here.
+ * Rationale: docs/adr/010-redis-dual-instance.md
+ *
  * - `enqueue` adds a job to Redis and returns the job ID immediately.
  * - A `Worker` processes jobs asynchronously outside the HTTP request cycle.
  * - Failed jobs are retried up to 3 times with exponential back-off.
@@ -232,7 +237,13 @@ async function processJob(job: Job): Promise<void> {
 async function runJob(type: JobType, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   switch (type) {
     case 'anchor_and_mint':
-      return runAnchorAndMint(payload as unknown as AnchorAndMintPayload)
+      // Handled by the Supabase Edge Function (pg_cron every 30 s), which
+      // reads pending rows from the `jobs` table. The BullMQ worker must not
+      // process these locally to avoid double anchor/mint.
+      throw new AppError(
+        'anchor_and_mint jobs are processed by the Supabase Edge Function, not the local worker',
+        'INTERNAL'
+      )
     case 'notification_delivery':
       return runNotificationDelivery(payload as unknown as NotificationDeliveryPayload)
     default:

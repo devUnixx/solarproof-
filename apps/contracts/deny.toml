@@ -1,7 +1,19 @@
 [advisories]
 version = 2
 db-urls = ["https://github.com/rustsec/advisory-db"]
-ignore = []
+ignore = [
+    # crypto-bigint 0.5.5 (RUSTSEC-2026-0387) — timing variability in
+    # constant-time operations. Transitive dep via soroban-env-host →
+    # elliptic-curve 0.13.x. No compatible upgrade path until the Soroban
+    # SDK ships a newer elliptic-curve series. Tracked in issue #230.
+    { id = "RUSTSEC-2026-0387" },
+    # derivative 2.2.0 (RUSTSEC-2024-0388) — unmaintained. Transitive dep
+    # via soroban-env-host / ark-* crates. Tracked in issue #230.
+    { id = "RUSTSEC-2024-0388" },
+    # paste 1.0.15 (RUSTSEC-2024-0436) — unmaintained. Transitive dep via
+    # soroban SDK macro crates. Tracked in issue #230.
+    { id = "RUSTSEC-2024-0436" },
+]
 
 [licenses]
 version = 2
