@@ -237,7 +237,13 @@ async function processJob(job: Job): Promise<void> {
 async function runJob(type: JobType, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   switch (type) {
     case 'anchor_and_mint':
-      return runAnchorAndMint(payload as unknown as AnchorAndMintPayload)
+      // Handled by the Supabase Edge Function (pg_cron every 30 s), which
+      // reads pending rows from the `jobs` table. The BullMQ worker must not
+      // process these locally to avoid double anchor/mint.
+      throw new AppError(
+        'anchor_and_mint jobs are processed by the Supabase Edge Function, not the local worker',
+        'INTERNAL'
+      )
     case 'notification_delivery':
       return runNotificationDelivery(payload as unknown as NotificationDeliveryPayload)
     default:
