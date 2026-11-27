@@ -72,6 +72,11 @@ services:
       retries: 5
       start_period: 20s
 
+  # Cache instance — session tokens, rate-limit counters, idempotency keys, operator suspension state.
+  # Eviction policy: allkeys-lru — it is safe to evict the least-recently-used key when memory is full
+  # because every cached value can be reconstructed from Supabase (a cache miss costs a DB round-trip,
+  # not a correctness failure). No persistence needed; cache rebuilds on restart.
+  # Connect via REDIS_URL (default: redis://localhost:6379). See: docs/adr/010-redis-dual-instance.md
   redis-cache:
     image: redis:7-alpine
     command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
@@ -86,6 +91,11 @@ services:
       retries: 3
       start_period: 10s
 
+  # Queue instance — BullMQ job state (anchor_and_mint, notification_delivery, erc1888-issuance).
+  # Eviction policy: noeviction — Redis must NEVER evict a job key; job loss is silent and unrecoverable.
+  # If memory is exhausted Redis will reject new writes, making the problem visible rather than silent.
+  # AOF persistence (--appendonly yes) ensures job state survives a container restart.
+  # Connect via REDIS_QUEUE_URL (default: redis://localhost:6380). See: docs/adr/010-redis-dual-instance.md
   redis-queue:
     image: redis:7-alpine
     command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction

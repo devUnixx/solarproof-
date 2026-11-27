@@ -25,6 +25,20 @@ info:
 
     All responses include an `API-Version: v1` header.
 
+    ### Deprecation
+
+    Responses served from unversioned `/api/` routes additionally include the
+    following headers so integrators can detect that they are on a legacy path:
+
+    - `Deprecation: true` — signals that the unversioned route is deprecated.
+    - `Sunset: <date>` — the date (RFC 7231 / HTTP-date) after which the
+      unversioned route may be removed. At least 6 months out.
+    - `Link: </api/v1/...>; rel="successor-version"` — points to the equivalent
+      canonical `/api/v1/` URL.
+
+    Migrate to the `/api/v1/` URL advertised in the `Link` header before the
+    `Sunset` date.
+
     ## Rate Limiting
 
     Rate limits are enforced per client. Exceeded requests receive `429 Too Many Requests`
@@ -56,6 +70,8 @@ info:
 servers:
   - url: https://solarproof.vercel.app
     description: Production
+  - url: https://staging.solarproof.vercel.app
+    description: Staging
 
 security: []
 
@@ -78,6 +94,10 @@ tags:
     description: Background job status polling
   - name: audit
     description: Audit log export
+  - name: explore
+    description: Public certificate explorer (no auth required)
+  - name: cooperative
+    description: Cooperative-level reporting and summaries
   - name: health
     description: Service health check
 
@@ -97,6 +117,9 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: operator@example.com
+              password: supersecret
       responses:
         '200':
           description: Authentication successful
@@ -132,6 +155,9 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: operator@example.com
+              password: supersecret
       responses:
         '301':
           description: Permanently redirected to /api/v1/auth/login
@@ -141,6 +167,12 @@ paths:
                 type: string
             API-Version:
               $ref: '#/components/headers/ApiVersion'
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
 
 paths:
   /api/auth/login:
@@ -148,6 +180,7 @@ paths:
       operationId: login
       tags: [auth]
       summary: Exchange email and password for JWT tokens
+      deprecated: true
       security: []
       requestBody:
         required: true
@@ -161,6 +194,13 @@ paths:
       responses:
         '200':
           description: Authentication successful
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -169,6 +209,13 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '401':
           description: Invalid credentials
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -181,6 +228,7 @@ paths:
       operationId: refreshToken
       tags: [auth]
       summary: Rotate refresh token and return a new token pair
+      deprecated: true
       security: []
       requestBody:
         required: true
@@ -188,9 +236,18 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/RefreshRequest'
+            example:
+              refresh_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example.refresh
       responses:
         '200':
           description: Token rotated successfully
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -199,21 +256,75 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '401':
           description: Invalid or expired refresh token
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+
+  /api/auth/switch-cooperative:
+    post:
+      operationId: switchCooperative
+      tags: [auth]
+      summary: Switch the active cooperative for the current session
+      description: |
+        Issues a new access token whose `cooperative_id` claim is set to the
+        requested cooperative. The caller must hold a role in the target
+        cooperative. The returned refresh token replaces the previous one.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SwitchCooperativeRequest'
+            example:
+              cooperative_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+      responses:
+        '200':
+          description: Cooperative switched — new token pair issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Caller has no role in the requested cooperative
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: Not a member of the requested cooperative
 
   /api/auth/logout:
     post:
       operationId: logout
       tags: [auth]
       summary: Invalidate the current session
+      deprecated: true
       security:
         - bearerAuth: []
       responses:
         '200':
           description: Session invalidated
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -230,6 +341,7 @@ paths:
       operationId: listReadings
       tags: [readings]
       summary: List meter readings (cursor-based pagination)
+      deprecated: true
       security:
         - bearerAuth: []
       parameters:
@@ -243,6 +355,13 @@ paths:
       responses:
         '200':
           description: Paginated list of readings
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -253,6 +372,7 @@ paths:
       operationId: submitReading
       tags: [readings]
       summary: Submit a signed meter reading
+      deprecated: true
       description: |
         Verifies the Ed25519 signature, anchors the reading hash on Stellar,
         and mints energy certificates (1 token = 1 kWh).
@@ -284,6 +404,13 @@ paths:
       responses:
         '201':
           description: Reading accepted, anchored, and certificates minted
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -292,6 +419,13 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '401':
           description: Ed25519 signature invalid
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -300,6 +434,13 @@ paths:
                 error: Invalid meter signature
         '404':
           description: Meter not registered or inactive
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -308,6 +449,13 @@ paths:
                 error: Meter not found or inactive
         '409':
           description: Reading already anchored
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -316,6 +464,13 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           description: Anchor or mint failed
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -326,6 +481,7 @@ paths:
       operationId: submitReadingsBatch
       tags: [readings]
       summary: Submit up to 100 signed meter readings in one request
+      deprecated: true
       description: |
         Each reading is validated, anchored, and minted independently.
         Returns per-reading status. HTTP 207 Multi-Status when at least one
@@ -341,15 +497,40 @@ paths:
                 $ref: '#/components/schemas/ReadingRequest'
               minItems: 1
               maxItems: 100
+            example:
+              - meter_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                kwh: 12.5
+                timestamp: 1745366400
+                signature_hex: "4b3e9f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f09a"
+                nonce: "unique-nonce-abc123"
+              - meter_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                kwh: 8.25
+                timestamp: 1745366460
+                signature_hex: "4b3e9f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f09b"
+                nonce: "unique-nonce-def456"
       responses:
         '207':
           description: Partial or full success — check per-reading status
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BatchReadingResponse'
         '400':
           description: All readings failed or request body invalid
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -360,6 +541,7 @@ paths:
       operationId: verifyCertificate
       tags: [verify]
       summary: Retrieve chain of custody for a certificate
+      deprecated: true
       description: |
         Public endpoint — no authentication required.
         Accepts a certificate UUID, reading hash (64-char hex), or mint transaction hash.
@@ -388,6 +570,12 @@ paths:
               schema:
                 type: string
                 enum: [HIT, MISS]
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -396,6 +584,13 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '404':
           description: No certificate matches the given id
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -410,6 +605,7 @@ paths:
       operationId: verifyCertificateById
       tags: [verify]
       summary: Retrieve chain of custody by path parameter
+      deprecated: true
       description: |
         Identical to `GET /api/verify?id=` but accepts the identifier as a
         path segment. Useful for REST-style integrations.
@@ -425,6 +621,7 @@ paths:
           description: Certificate UUID, reading hash (64-char hex), or mint transaction hash
           schema:
             type: string
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
       responses:
         '200':
           description: Certificate found
@@ -436,6 +633,12 @@ paths:
               schema:
                 type: string
                 enum: [HIT, MISS]
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -515,11 +718,145 @@ paths:
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
+  /api/explore/certificates:
+    get:
+      operationId: exploreCertificates
+      tags: [explore]
+      summary: Public certificate explorer listing
+      description: |
+        Public endpoint — no authentication required. Backs the `/explore` page.
+
+        Lists all certificates with offset pagination (20 per page by default).
+        Supports filtering by cooperative name, date range, and kWh range.
+        Each returned certificate can be verified via `GET /api/verify/{id}`.
+      security: []
+      parameters:
+        - name: page
+          in: query
+          description: 1-based page number
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          description: Results per page (max 100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cooperative_name
+          in: query
+          description: Case-insensitive substring match on cooperative name
+          schema:
+            type: string
+        - name: date_from
+          in: query
+          description: Inclusive lower bound on `issued_at` (ISO date)
+          schema:
+            type: string
+            format: date
+        - name: date_to
+          in: query
+          description: Inclusive upper bound on `issued_at` (ISO date)
+          schema:
+            type: string
+            format: date
+        - name: kwh_min
+          in: query
+          description: Inclusive lower bound on certificate kWh
+          schema:
+            type: number
+            minimum: 0
+        - name: kwh_max
+          in: query
+          description: Inclusive upper bound on certificate kWh
+          schema:
+            type: number
+            minimum: 0
+      responses:
+        '200':
+          description: Paginated list of certificates
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              example: public, max-age=60, stale-while-revalidate=30
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExploreCertificateListResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/cooperative/retirement-report:
+    get:
+      operationId: getCooperativeRetirementReport
+      tags: [cooperative]
+      summary: Cooperative retirement and production summary report
+      description: |
+        Returns a cooperative-level summary covering total kWh produced,
+        certificates issued and retired, broken down by meter, for the given
+        date range. Supports CSV and PDF export.
+
+        Requires an operator JWT scoped to the cooperative.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: date_from
+          in: query
+          description: Inclusive start of the reporting range (ISO date)
+          schema:
+            type: string
+            format: date
+        - name: date_to
+          in: query
+          description: Inclusive end of the reporting range (ISO date)
+          schema:
+            type: string
+            format: date
+        - name: format
+          in: query
+          description: Output format
+          schema:
+            type: string
+            enum: [json, csv, pdf]
+            default: json
+      responses:
+        '200':
+          description: Report generated
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              example: 'attachment; filename="cooperative_report_2026-01-01_2026-01-31.csv"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CooperativeReport'
+            text/csv:
+              schema:
+                type: string
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /api/certificates:
     get:
       operationId: listCertificates
       tags: [certificates]
       summary: List certificates (cursor-based pagination)
+      deprecated: true
       description: |
         Supports filtering by status, date range, and text search.
         No authentication required.
@@ -527,6 +864,7 @@ paths:
         Pagination: pass `cursor` (the `next_cursor` from the previous response)
         to fetch the next page. The `page` parameter is supported for backward
         compatibility but is deprecated — use `cursor` for new integrations.
+        See [ADR-010](docs/adr/010-cursor-pagination.md) for the rationale.
       security: []
       parameters:
         - $ref: '#/components/parameters/limit'
@@ -574,6 +912,13 @@ paths:
       responses:
         '200':
           description: Paginated list of certificates
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -649,6 +994,7 @@ paths:
           schema:
             type: string
             format: uuid
+          example: c0e1f2a3-b4c5-6789-abcd-ef0123456789
       responses:
         '200':
           description: Public cooperative profile
@@ -723,6 +1069,11 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/CreateMarketplaceListingRequest'
+            example:
+              certificate_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+              asking_price: 25.5
+              currency: USD
+              note: Verified solar certificates, Oaxaca region
       responses:
         '201':
           description: Listing created
@@ -756,6 +1107,7 @@ paths:
           schema:
             type: string
             format: uuid
+          example: 7f3a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8
       responses:
         '200':
           description: Listing record
@@ -778,6 +1130,7 @@ paths:
           schema:
             type: string
             format: uuid
+          example: 7f3a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8
       responses:
         '200':
           description: Listing cancelled
@@ -816,12 +1169,16 @@ paths:
           schema:
             type: string
             format: uuid
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/TransferRequest'
+            example:
+              recipient_cooperative_id: c0e1f2a3-b4c5-6789-abcd-ef0123456789
+              listing_id: 7f3a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8
       responses:
         '200':
           description: Certificate transferred
@@ -847,6 +1204,7 @@ paths:
       operationId: retireCertificate
       tags: [certificates]
       summary: Retire a certificate permanently
+      deprecated: true
       description: |
         Calls `energy_token.retire` on-chain. A retired certificate cannot be
         used again. The retirement is recorded on Stellar and in the database.
@@ -859,15 +1217,25 @@ paths:
           schema:
             type: string
             format: uuid
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/RetireRequest'
+            example:
+              wallet_address: GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUV
       responses:
         '200':
           description: Certificate retired successfully
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -878,12 +1246,27 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: Certificate already retired
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
               example:
                 error: Certificate already retired
+        '410':
+          description: Certificate has expired and cannot be retired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: Certificate expired on 2026-01-01T00:00:00Z and cannot be retired
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -892,11 +1275,19 @@ paths:
       operationId: listMeters
       tags: [meters]
       summary: List all registered meters
+      deprecated: true
       security:
         - bearerAuth: []
       responses:
         '200':
           description: Array of meter records
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -909,6 +1300,7 @@ paths:
       operationId: registerMeter
       tags: [meters]
       summary: Register a new meter
+      deprecated: true
       security:
         - bearerAuth: []
       requestBody:
@@ -917,9 +1309,21 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/RegisterMeterRequest'
+            example:
+              name: Rooftop Meter 001
+              cooperative_id: c0e1f2a3-b4c5-6789-abcd-ef0123456789
+              serial_number: SN-000123
+              pubkey_hex: 3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29
       responses:
         '201':
           description: Meter registered
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -930,6 +1334,13 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '409':
           description: A meter with this public key already exists
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -940,6 +1351,7 @@ paths:
       operationId: revokeMeter
       tags: [meters]
       summary: Deactivate a meter (set active=false)
+      deprecated: true
       security:
         - bearerAuth: []
       parameters:
@@ -949,9 +1361,17 @@ paths:
           schema:
             type: string
             format: uuid
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
       responses:
         '200':
           description: Meter deactivated
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -966,6 +1386,7 @@ paths:
       operationId: getJob
       tags: [jobs]
       summary: Poll background job status
+      deprecated: true
       description: |
         Poll this endpoint after `POST /api/readings` to check whether the
         Stellar anchor and mint have completed.
@@ -977,9 +1398,17 @@ paths:
           schema:
             type: string
             format: uuid
+          example: 9d8c7b6a-5f4e-3d2c-1b0a-9f8e7d6c5b4a
       responses:
         '200':
           description: Job record
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -992,6 +1421,7 @@ paths:
       operationId: exportAuditLog
       tags: [audit]
       summary: Export audit log as CSV
+      deprecated: true
       description: |
         Returns audit log entries as a CSV file. Defaults to the last 30 days.
         Requires operator JWT.
@@ -1024,6 +1454,12 @@ paths:
               schema:
                 type: string
               example: 'attachment; filename="audit_log_2026-01-01_2026-01-31.csv"'
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             text/csv:
               schema:
@@ -1037,10 +1473,18 @@ paths:
       tags: [health]
       summary: Liveness check
       description: Returns 200 when the service is running. Used by uptime monitoring.
+      deprecated: true
       security: []
       responses:
         '200':
           description: Service is healthy
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/Link'
           content:
             application/json:
               schema:
@@ -1060,6 +1504,10 @@ paths:
       operationId: getOpenApiSpec
       tags: [health]
       summary: Serve this OpenAPI specification as YAML
+      description: |
+        Returns the raw OpenAPI 3.1 document. The interactive API playground
+        (Redoc / Swagger UI) is rendered at `/api/docs` in the browser and
+        loads this spec; try-it-out is enabled with pre-filled example values.
       security: []
       responses:
         '200':
@@ -1084,6 +1532,31 @@ components:
         type: string
         enum: [v1]
         example: v1
+    Deprecation:
+      description: |
+        Present on responses served from unversioned `/api/` routes.
+        Signals that the route is deprecated and will be removed after the
+        date advertised in the `Sunset` header.
+      schema:
+        type: string
+        enum: ['true']
+        example: 'true'
+    Sunset:
+      description: |
+        Present on responses served from unversioned `/api/` routes.
+        HTTP-date (RFC 7231) after which the legacy route may be removed.
+        At least 6 months from the deprecation announcement.
+      schema:
+        type: string
+        example: 'Wed, 01 Jul 2026 00:00:00 GMT'
+    Link:
+      description: |
+        Present on responses served from unversioned `/api/` routes.
+        Points to the equivalent canonical `/api/v1/` URL using
+        `rel="successor-version"`.
+      schema:
+        type: string
+        example: '</api/v1/auth/login>; rel="successor-version"'
 
   parameters:
     limit:
@@ -1095,6 +1568,7 @@ components:
         minimum: 1
         maximum: 100
         default: 20
+        example: 20
 
   responses:
     Unauthorized:
@@ -1164,9 +1638,11 @@ components:
         email:
           type: string
           format: email
+          example: operator@example.com
         password:
           type: string
           minLength: 8
+          example: supersecret
 
     RefreshRequest:
       type: object
@@ -1175,6 +1651,16 @@ components:
         refresh_token:
           type: string
           minLength: 1
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example.refresh
+
+    SwitchCooperativeRequest:
+      type: object
+      required: [cooperative_id]
+      properties:
+        cooperative_id:
+          type: string
+          format: uuid
+          description: Cooperative to make active for the new token
 
     TokenResponse:
       type: object
@@ -1202,13 +1688,16 @@ components:
           type: string
           format: uuid
           description: Registered meter identifier
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
         kwh:
           type: number
           exclusiveMinimum: 0
           description: Energy generated in kilowatt-hours
+          example: 12.5
         timestamp:
           type: integer
           description: Unix timestamp in seconds (must be within 5 minutes of server time)
+          example: 1745366400
         signature_hex:
           type: string
           minLength: 128
@@ -1216,11 +1705,13 @@ components:
           description: |
             Ed25519 signature of the canonical reading hash, hex-encoded (64 bytes = 128 hex chars).
             See `docs/ED25519_PROTOCOL.md` for the signing payload format.
+          example: "4b3e9f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f09a"
         nonce:
           type: string
           minLength: 1
           maxLength: 128
           description: Unique per-request nonce for replay protection (recommended)
+          example: "unique-nonce-abc123"
 
     ReadingResponse:
       type: object
@@ -1378,6 +1869,13 @@ components:
         issued_at:
           type: string
           format: date-time
+        expires_at:
+          type: ['string', 'null']
+          format: date-time
+          description: |
+            Validity period end. Null when the certificate does not expire.
+            Certificates past `expires_at` are shown with an `Expired` badge
+            and cannot be retired.
         retired:
           type: boolean
         retired_at:
@@ -1391,6 +1889,100 @@ components:
           type: ['string', 'null']
           format: uuid
 
+    ExploreCertificateListResponse:
+      type: object
+      required: [data, page, per_page, total, total_pages]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExploreCertificate'
+        page:
+          type: integer
+        per_page:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+
+    ExploreCertificate:
+      type: object
+      required: [id, kwh, issued_at, retired, verify_url]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kwh:
+          type: number
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: ['string', 'null']
+          format: date-time
+        retired:
+          type: boolean
+        cooperative_id:
+          type: ['string', 'null']
+          format: uuid
+        cooperative_name:
+          type: ['string', 'null']
+        meter_id:
+          type: ['string', 'null']
+          format: uuid
+        verify_url:
+          type: string
+          description: Relative link to the public verification page
+          example: /verify/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+
+    CooperativeReport:
+      type: object
+      required: [cooperative_id, date_from, date_to, totals, by_meter]
+      properties:
+        cooperative_id:
+          type: string
+          format: uuid
+        date_from:
+          type: string
+          format: date
+        date_to:
+          type: string
+          format: date
+        totals:
+          $ref: '#/components/schemas/CooperativeReportTotals'
+        by_meter:
+          type: array
+          items:
+            $ref: '#/components/schemas/CooperativeReportMeterRow'
+
+    CooperativeReportTotals:
+      type: object
+      required: [kwh_produced, certificates_issued, certificates_retired]
+      properties:
+        kwh_produced:
+          type: number
+        certificates_issued:
+          type: integer
+        certificates_retired:
+          type: integer
+
+    CooperativeReportMeterRow:
+      type: object
+      required: [meter_id, kwh_produced, certificates_issued, certificates_retired]
+      properties:
+        meter_id:
+          type: string
+          format: uuid
+        serial_number:
+          type: ['string', 'null']
+        kwh_produced:
+          type: number
+        certificates_issued:
+          type: integer
+        certificates_retired:
+          type: integer
+
     RetireRequest:
       type: object
       required: [wallet_address]
@@ -1398,6 +1990,7 @@ components:
         wallet_address:
           type: string
           description: Stellar G-address of the certificate holder
+          example: GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUV
 
     RetireResponse:
       type: object
@@ -1440,6 +2033,10 @@ components:
             retired_by:
               type: ['string', 'null']
               description: Stellar wallet address that retired the certificate
+            expires_at:
+              type: ['string', 'null']
+              format: date-time
+              description: Validity period end; null when the certificate does not expire
         on_chain:
           type: object
           required: [anchor_tx, anchor_explorer, mint_tx, mint_explorer]
@@ -1513,17 +2110,21 @@ components:
         certificate_id:
           type: string
           format: uuid
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
         asking_price:
           type: number
           exclusiveMinimum: 0
           description: Off-chain asking price (settlement is manual in v1)
+          example: 25.5
         currency:
           type: string
           default: USD
           description: Currency of the asking price
+          example: USD
         note:
           type: ['string', 'null']
           maxLength: 500
+          example: Verified solar certificates, Oaxaca region
 
     MarketplaceListing:
       type: object
@@ -1579,10 +2180,12 @@ components:
         recipient_cooperative_id:
           type: string
           format: uuid
+          example: c0e1f2a3-b4c5-6789-abcd-ef0123456789
         listing_id:
           type: ['string', 'null']
           format: uuid
           description: Marketplace listing this transfer fulfils, if any
+          example: 7f3a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8
 
     TransferResponse:
       type: object
@@ -1613,18 +2216,22 @@ components:
           type: string
           minLength: 1
           maxLength: 128
+          example: Rooftop Meter 001
         cooperative_id:
           type: string
           format: uuid
+          example: c0e1f2a3-b4c5-6789-abcd-ef0123456789
         serial_number:
           type: string
           minLength: 1
           maxLength: 64
+          example: SN-000123
         pubkey_hex:
           type: string
           minLength: 64
           maxLength: 64
           description: Ed25519 public key, hex-encoded (32 bytes = 64 hex chars)
+          example: 3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29
 
     Meter:
       type: object

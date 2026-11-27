@@ -19,10 +19,40 @@
  *   NEXT_PUBLIC_SUPABASE_URL        — Supabase project URL (public)
  *   NEXT_PUBLIC_SUPABASE_ANON_KEY   — Supabase anon/public key
  *   SUPABASE_SERVICE_ROLE_KEY       — Supabase service-role secret (server only)
+ *
+ * Environment variables optional (production connection pooling):
+ *   PGBOUNCER_URL                   — PgBouncer pooled connection string. When
+ *                                     set, server-side clients connect through
+ *                                     PgBouncer instead of the direct Supabase
+ *                                     URL, preventing connection exhaustion
+ *                                     under serverless concurrency.
+ *   PGBOUNCER_POOL_SIZE             — Max connections per serverless instance
+ *                                     (defaults to 10). Tune to expected
+ *                                     concurrency / instance count.
  */
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from './database.types'
 import { env } from '@/env'
+
+const DEFAULT_POOL_SIZE = 10
+
+/**
+ * Resolve the connection URL for server-side clients. Prefers the PgBouncer
+ * pooled connection string when configured, falling back to the direct
+ * Supabase URL for local/dev environments.
+ */
+function getServerConnectionUrl(): string {
+  return env.PGBOUNCER_URL || env.NEXT_PUBLIC_SUPABASE_URL
+}
+
+/**
+ * Resolve the per-instance connection pool size from PGBOUNCER_POOL_SIZE.
+ * Falls back to a conservative default when unset or invalid.
+ */
+function getPoolSize(): number {
+  const parsed = Number(env.PGBOUNCER_POOL_SIZE)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_POOL_SIZE
+}
 
 export const supabase = createClient<Database>(
   env.NEXT_PUBLIC_SUPABASE_URL || 'http://localhost',
@@ -32,12 +62,38 @@ export const supabase = createClient<Database>(
 /**
  * Anon client — uses the public anon key; RLS is enforced.
  * Use for public read-only endpoints (e.g. /api/verify) that require no auth.
+ * Connects through PgBouncer when PGBOUNCER_URL is configured.
  */
 export function createAnonClient() {
   return createClient<Database>(
+    getServerConnectionUrl(),
+    env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    {
+      auth: { persistSession: false },
+      db: { poolSize: getPoolSize() },
+    }
+  )
+}
+
+/**
+ * User-scoped client — forwards the caller's access token so RLS is enforced
+ * as that user. This is the DEFAULT for authenticated API routes and Server
+ * Components. Prefer this over `createServiceClient` unless the service-role
+ * bypass is explicitly justified (see docs/adr/007-supabase-service-role-usage.md).
+ *
+ * @param accessToken The caller's Supabase access token (JWT). When omitted,
+ *                    falls back to the anon key (RLS still enforced).
+ */
+export function createUserClient(accessToken?: string) {
+  return createClient<Database>(
     env.NEXT_PUBLIC_SUPABASE_URL,
     env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    { auth: { persistSession: false } }
+    {
+      auth: { persistSession: false },
+      global: accessToken
+        ? { headers: { Authorization: `Bearer ${accessToken}` } }
+        : undefined,
+    }
   )
 }
 
@@ -49,11 +105,18 @@ export function createAnonClient() {
  *   - Webhook fan-out (cross-cooperative queries)
  *   - Health checks (needs cross-tenant visibility)
  * See docs/adr/007-supabase-service-role-usage.md for the full justification.
+ *
+ * AUDIT (#765): every call site MUST carry a comment referencing
+ * docs/adr/007-supabase-service-role-usage.md explaining why RLS bypass is
+ * required. If you cannot justify it, use `createUserClient()` instead.
  */
 export function createServiceClient() {
   return createClient<Database>(
-    env.NEXT_PUBLIC_SUPABASE_URL,
+    getServerConnectionUrl(),
     env.SUPABASE_SERVICE_ROLE_KEY,
-    { auth: { persistSession: false } }
+    {
+      auth: { persistSession: false },
+      db: { poolSize: getPoolSize() },
+    }
   )
 }

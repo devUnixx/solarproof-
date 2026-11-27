@@ -151,3 +151,74 @@ fn lifecycle_expired_proposal_cannot_execute() {
     // Must panic — expired proposals cannot be executed
     client.execute(&id);
 }
+
+/// active_proposals(): returns an empty vector when no proposals exist.
+#[test]
+fn active_proposals_empty() {
+    let (_env, client) = setup();
+    assert_eq!(client.active_proposals().len(), 0);
+}
+
+/// active_proposals(): returns the single ID after one proposal is created.
+#[test]
+fn active_proposals_single() {
+    let (env, client) = setup();
+    let proposer = soroban_sdk::Address::generate(&env);
+
+    let id = client.propose(&proposer, &title(&env, "Only one"), &title(&env, "Desc"));
+
+    let active = client.active_proposals();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active.get(0).unwrap(), id);
+}
+
+/// active_proposals(): returns only IDs of proposals still in Active status.
+#[test]
+fn active_proposals_filters_finalized() {
+    let (env, client) = setup();
+    let proposer = soroban_sdk::Address::generate(&env);
+
+    // Three proposals that will remain Active.
+    let active_a = client.propose(&proposer, &title(&env, "Active A"), &title(&env, "Desc"));
+    let active_b = client.propose(&proposer, &title(&env, "Active B"), &title(&env, "Desc"));
+
+    // One proposal that will be Passed.
+    let passed = client.propose(&proposer, &title(&env, "Passed"), &title(&env, "Desc"));
+    for _ in 0..3 {
+        client.vote(&soroban_sdk::Address::generate(&env), &passed, &true);
+    }
+
+    // One proposal that will be Rejected.
+    let rejected = client.propose(&proposer, &title(&env, "Rejected"), &title(&env, "Desc"));
+    client.vote(&soroban_sdk::Address::generate(&env), &rejected, &true);
+    client.vote(&soroban_sdk::Address::generate(&env), &rejected, &false);
+    client.vote(&soroban_sdk::Address::generate(&env), &rejected, &false);
+
+    // One proposal that will Expire (no votes).
+    let expired = client.propose(&proposer, &title(&env, "Expired"), &title(&env, "Desc"));
+
+    // Advance past the voting period and finalize the three non-active ones.
+    env.ledger()
+        .with_mut(|l| l.sequence_number += VOTING_PERIOD + 1);
+    client.finalize(&passed);
+    client.finalize(&rejected);
+    client.finalize(&expired);
+
+    assert_eq!(
+        client.get_proposal(&passed).unwrap().status,
+        ProposalStatus::Passed
+    );
+    assert_eq!(
+        client.get_proposal(&rejected).unwrap().status,
+        ProposalStatus::Rejected
+    );
+    assert_eq!(
+        client.get_proposal(&expired).unwrap().status,
+        ProposalStatus::Expired
+    );
+
+    let active = client.active_proposals();
+    assert_eq!(active.len(), 2);
+    assert_eq!(active.get(0).unwrap(), active_a);
+    assert_eq!(active.get(1).unwrap(), active_b);
+}

@@ -3,16 +3,19 @@ name: Validate OpenAPI
 # Runs when the spec or any API route changes.
 # Keeps the spec up-to-date with route changes by failing CI if the spec
 # is stale (contributors must regenerate/update openapi.yaml).
+# Also enforces that CHANGELOG.md is updated whenever openapi.yaml changes.
 on:
   pull_request:
     paths:
       - 'openapi.yaml'
       - 'apps/web/src/app/api/**'
       - 'docs/**'
+      - 'CHANGELOG.md'
   push:
     branches: [main, develop]
     paths:
       - 'openapi.yaml'
+      - 'CHANGELOG.md'
 
 jobs:
   validate-openapi:
@@ -52,3 +55,20 @@ jobs:
           contains(github.event.pull_request.changed_files_url, 'api/')
         run: |
           echo "::notice::API routes changed in this PR. Ensure openapi.yaml is updated to reflect any new or modified endpoints."
+
+      - name: Enforce CHANGELOG update when openapi.yaml changes
+        if: github.event_name == 'pull_request'
+        run: |
+          # Determine which files changed in this PR
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          OPENAPI_CHANGED=$(echo "$CHANGED" | grep -c "^openapi\.yaml$" || true)
+          CHANGELOG_CHANGED=$(echo "$CHANGED" | grep -c "^CHANGELOG\.md$" || true)
+
+          if [ "$OPENAPI_CHANGED" -gt "0" ] && [ "$CHANGELOG_CHANGED" -eq "0" ]; then
+            echo "::error::openapi.yaml was modified but CHANGELOG.md was not updated. Add an entry under [Unreleased] describing the API change."
+            exit 1
+          fi
+
+          if [ "$OPENAPI_CHANGED" -gt "0" ]; then
+            echo "✅ openapi.yaml changed and CHANGELOG.md was updated."
+          fi

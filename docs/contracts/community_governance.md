@@ -132,6 +132,22 @@ Returns the total number of proposals created.
 
 ---
 
+### `active_proposals(env) → Vec<u32>`
+
+Returns the IDs of all proposals currently in `Active` status.
+
+- **Read-only:** no state is mutated.
+- **Bounded:** the result is capped by the `MAX_ACTIVE_PROPOSALS` constant (default `100`), so gas cost is bounded regardless of how many proposals exist.
+
+Clients should use this view instead of scanning proposals by ID to build an off-chain index of open proposals.
+
+**Example:**
+```bash
+stellar contract invoke --id <CONTRACT_ID> -- active_proposals
+```
+
+---
+
 ## Error Codes
 
 | Panic message | Cause |

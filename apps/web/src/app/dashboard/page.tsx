@@ -18,10 +18,10 @@ import { useTheme } from 'next-themes'
 import { Zap, Award, Leaf, TrendingUp, Download, Bell } from 'lucide-react'
 import { AccessibleLegend } from '@/components/accessible-chart-legend'
 import { StatCardSkeleton, ChartSkeleton, TableRowSkeleton } from '@/components/skeleton'
-import { useState, useMemo, memo, useEffect, useCallback } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useState, useMemo, memo, useEffect } from 'react'
 import { useRealtimeReadings } from '@/hooks/use-realtime-readings'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { usePersistentFilters } from '@/hooks/use-persistent-filters'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -225,13 +225,17 @@ function useChartColors() {
   const dark = resolvedTheme === 'dark'
   return {
     grid: dark ? '#374151' : '#e5e7eb',
-    text: dark ? '#9ca3af' : '#6b7280',
-    area: '#f59e0b',
+    // Axis text: #4b5563 on white ≈ 7.5:1, #d1d5db on #111827 ≈ 9.6:1
+    text: dark ? '#d1d5db' : '#4b5563',
+    // Amber area stroke: #b45309 on white ≈ 4.8:1, #fbbf24 on #111827 ≈ 8.6:1
+    area: dark ? '#fbbf24' : '#b45309',
     areaFill: dark ? '#f59e0b33' : '#fef3c7',
-    bar1: '#f59e0b',
-    bar2: '#0ea5e9',
-    line1: '#10b981', // green
-    line2: '#ef4444', // red
+    bar1: dark ? '#fbbf24' : '#b45309',
+    bar2: dark ? '#38bdf8' : '#0369a1',
+    // Green line: #047857 on white ≈ 5.5:1, #34d399 on #111827 ≈ 8.1:1
+    line1: dark ? '#34d399' : '#047857',
+    // Red line: #b91c1c on white ≈ 5.9:1, #f87171 on #111827 ≈ 5.6:1
+    line2: dark ? '#f87171' : '#b91c1c',
     tooltip: {
       bg: dark ? '#1f2937' : '#ffffff',
       border: dark ? '#374151' : '#e5e7eb',
@@ -241,22 +245,42 @@ function useChartColors() {
 }
 
 // ---------------------------------------------------------------------------
-// Meter reading row
+// Visually hidden data table (screen-reader fallback for charts)
 // ---------------------------------------------------------------------------
-const MeterReadingRow = memo(function MeterReadingRow({ reading }: { reading: Reading }) {
+interface ChartDataTableProps {
+  id: string
+  caption: string
+  columns: { key: string; label: string }[]
+  rows: Record<string, string | number>[]
+}
+
+function ChartDataTable({ id, caption, columns, rows }: ChartDataTableProps) {
   return (
-    <tr>
-      <td className="px-6 py-3 font-mono text-[10px] text-gray-500">{reading.id}</td>
-      <td className="px-6 py-3 text-gray-900 dark:text-gray-100 font-medium">{reading.kwh.toFixed(3)} kWh</td>
-      <td className="px-6 py-3 text-gray-500">{new Date(reading.timestamp).toLocaleString()}</td>
-      <td className="px-6 py-3 text-right">
-        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${reading.verified ? 'bg-green-100 text-green-700 dark:bg-green-900/30' : 'bg-yellow-100 text-yellow-700'}`}>
-          {reading.verified ? 'Verified' : 'Pending'}
-        </span>
-      </td>
-    </tr>
+    <table id={id} className="sr-only">
+      <caption>{caption}</caption>
+      <thead>
+        <tr>
+          {columns.map((col) => (
+            <th key={col.key} scope="col">{col.label}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.length === 0 ? (
+          <tr>
+            <td colSpan={columns.length}>No data available.</td>
+          </tr>
+        ) : rows.map((row, i) => (
+          <tr key={i}>
+            {columns.map((col) => (
+              <td key={col.key}>{row[col.key]}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
   )
-})
+}
 
 // ---------------------------------------------------------------------------
 // CSV export
@@ -281,12 +305,62 @@ function exportCsv(data: object[], filename: string) {
 export default function DashboardPage() {
   const [granularity, setGranularity] = useState<Period>('day')
   const [range, setRange] = useState<'30d' | '90d' | 'ytd' | 'all'>('30d')
+  const [meterIds, setMeterIds] = useState<string[]>([])
+  const [pageSize, setPageSize] = useState<number>(10)
   const [reportMonth, setReportMonth] = useState<string>(currentMonth())
   const [reportDownloading, setReportDownloading] = useState(false)
   const [reportError, setReportError] = useState<string | null>(null)
   // TODO: replace with the cooperative membership/role from the session context.
   const isCooperative = true
-  
+
+  const {
+    filters: persistedFilters,
+    setFilter: setPersistedFilter,
+    resetFilters,
+    hydrated: filtersHydrated,
+  } = usePersistentFilters('dashboard', {
+    range: '30d',
+    meterIds: [] as string[],
+    pageSize: 10,
+  })
+
+  // Restore persisted filter values once the hook has hydrated from storage.
+  useEffect(() => {
+    if (!filtersHydrated) return
+    const persistedRange = persistedFilters.range
+    if (persistedRange === '30d' || persistedRange === '90d' || persistedRange === 'ytd' || persistedRange === 'all') {
+      setRange(persistedRange)
+    }
+    if (Array.isArray(persistedFilters.meterIds)) {
+      setMeterIds(persistedFilters.meterIds)
+    }
+    if (typeof persistedFilters.pageSize === 'number' && persistedFilters.pageSize > 0) {
+      setPageSize(persistedFilters.pageSize)
+    }
+  }, [filtersHydrated, persistedFilters.range, persistedFilters.meterIds, persistedFilters.pageSize])
+
+  const handleRangeChange = (next: '30d' | '90d' | 'ytd' | 'all') => {
+    setRange(next)
+    setPersistedFilter('range', next)
+  }
+
+  const handleMeterIdsChange = (next: string[]) => {
+    setMeterIds(next)
+    setPersistedFilter('meterIds', next)
+  }
+
+  const handlePageSizeChange = (next: number) => {
+    setPageSize(next)
+    setPersistedFilter('pageSize', next)
+  }
+
+  const handleClearFilters = () => {
+    resetFilters()
+    setRange('30d')
+    setMeterIds([])
+    setPageSize(10)
+  }
+
   const dateParams = useMemo(() => {
     const now = new Date()
     let from: Date | undefined
@@ -343,7 +417,8 @@ export default function DashboardPage() {
     error: analyticsError,
   } = useQuery({ 
     queryKey: ['analytics', dateParams.date_from, dateParams.date_to, dateParams.granularity],
-    queryFn: () => fetchAnalytics(dateParams) 
+    queryFn: () => fetchAnalytics(dateParams),
+    enabled: filtersHydrated,
   })
 
   const {
@@ -413,6 +488,20 @@ export default function DashboardPage() {
     }))
   }, [analytics?.trends, granularity])
 
+  const generationTableRows = useMemo(
+    () => chartData.map((d) => ({ date: d.date, kwh: d.kwh.toLocaleString() })),
+    [chartData],
+  )
+
+  const certsTableRows = useMemo(
+    () => chartData.map((d) => ({
+      date: d.date,
+      issued: d.certs_issued.toLocaleString(),
+      retired: d.certs_retired.toLocaleString(),
+    })),
+    [chartData],
+  )
+
   const stats = analytics?.summary || { total_kwh: 0, certificates_issued: 0, certificates_retired: 0, active_meters: 0 }
 
   return (
@@ -424,13 +513,14 @@ export default function DashboardPage() {
           <p className="text-sm text-gray-500 dark:text-gray-400">Energy generation and certificate trends.</p>
         </div>
         
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {/* Range Selector */}
           <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-1 dark:border-gray-800 dark:bg-gray-950">
             {(['30d', '90d', 'ytd', 'all'] as const).map((r) => (
               <button
                 key={r}
-                onClick={() => setRange(r)}
+                onClick={() => handleRangeChange(r)}
+                aria-pressed={range === r}
                 className={`rounded-md px-2.5 py-1 text-xs font-medium uppercase transition-colors ${
                   range === r 
                     ? 'bg-yellow-400 text-gray-900' 
@@ -441,6 +531,42 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
+
+          {/* Meter Selector */}
+          <label htmlFor="dashboard-meter-filter" className="sr-only">Filter by meter</label>
+          <select
+            id="dashboard-meter-filter"
+            multiple
+            value={meterIds}
+            onChange={(e) =>
+              handleMeterIdsChange(Array.from(e.target.selectedOptions, (o) => o.value))
+            }
+            className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-900 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
+          >
+            {(analytics?.meter_stats ?? []).map((m) => (
+              <option key={m.meter_id} value={m.meter_id}>{m.meter_name}</option>
+            ))}
+          </select>
+
+          {/* Page size */}
+          <label htmlFor="dashboard-page-size" className="sr-only">Rows per page</label>
+          <select
+            id="dashboard-page-size"
+            value={pageSize}
+            onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+            className="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-900 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
+          >
+            {[10, 25, 50].map((size) => (
+              <option key={size} value={size}>{size} / page</option>
+            ))}
+          </select>
+
+          <button
+            onClick={handleClearFilters}
+            className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-400 dark:hover:bg-gray-900"
+          >
+            Clear filters
+          </button>
 
           <div className="h-6 w-px bg-gray-200 dark:bg-gray-800" />
 
@@ -506,8 +632,10 @@ export default function DashboardPage() {
             <div
               className="h-64 w-full"
               role="img"
+              tabIndex={0}
+              aria-label="Generation trend: kWh output over time"
               aria-labelledby="generation-trend-title"
-              aria-describedby="generation-trend-desc generation-trend-legend"
+              aria-describedby="generation-trend-desc generation-trend-legend generation-trend-table"
             >
               {analyticsLoading ? <ChartSkeleton title="Generation trend" /> : (
                 <ResponsiveContainer width="100%" height="100%">
@@ -523,6 +651,15 @@ export default function DashboardPage() {
                 </ResponsiveContainer>
               )}
             </div>
+            <ChartDataTable
+              id="generation-trend-table"
+              caption="Generation trend data: kWh output per period"
+              columns={[
+                { key: 'date', label: 'Period' },
+                { key: 'kwh', label: 'kWh' },
+              ]}
+              rows={generationTableRows}
+            />
           </figure>
         </div>
         </ErrorBoundary>
@@ -557,8 +694,10 @@ export default function DashboardPage() {
             <div
               className="h-64 w-full"
               role="img"
+              tabIndex={0}
+              aria-label="Certificates activity: issued versus retired certificates over time"
               aria-labelledby="certs-activity-title"
-              aria-describedby="certs-activity-desc"
+              aria-describedby="certs-activity-desc certs-activity-table"
             >
               {analyticsLoading ? <ChartSkeleton title="Certificates activity" /> : (
                 <ResponsiveContainer width="100%" height="100%">
@@ -585,6 +724,16 @@ export default function DashboardPage() {
                 </ResponsiveContainer>
               )}
             </div>
+            <ChartDataTable
+              id="certs-activity-table"
+              caption="Certificates activity data: issued and retired certificates per period"
+              columns={[
+                { key: 'date', label: 'Period' },
+                { key: 'issued', label: 'Issued' },
+                { key: 'retired', label: 'Retired' },
+              ]}
+              rows={certsTableRows}
+            />
           </figure>
         </div>
         </ErrorBoundary>
@@ -685,7 +834,10 @@ export default function DashboardPage() {
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
               {analyticsLoading ? (
                 <><TableRowSkeleton cols={5} /><TableRowSkeleton cols={5} /><TableRowSkeleton cols={5} /></>
-              ) : analytics?.meter_stats.map((m) => (
+              ) : (analytics?.meter_stats ?? [])
+                .filter((m) => meterIds.length === 0 || meterIds.includes(m.meter_id))
+                .slice(0, pageSize)
+                .map((m) => (
                 <tr key={m.meter_id} className="transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/40">
                   <td className="px-6 py-4">
                     <div className="font-medium text-gray-900 dark:text-gray-100">{m.meter_name}</div>
@@ -754,7 +906,7 @@ export default function DashboardPage() {
                     No certificate alerts yet.
                   </td>
                 </tr>
-              ) : notifications.slice(0, 10).map((n) => (
+              ) : notifications.slice(0, pageSize).map((n) => (
                 <tr
                   key={n.id}
                   onClick={() => {
@@ -809,10 +961,15 @@ export default function DashboardPage() {
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
               {readingsLoading ? (
                 <><TableRowSkeleton cols={4} /><TableRowSkeleton cols={4} /></>
-              ) : (readingsPage?.readings.length ?? 0) === 0 ? (
-                <tr>
-                  <td colSpan={4} className="px-6 py-6 text-center text-sm text-gray-500 dark:text-gray-400">
-                    No readings available.
+              ) : readings?.slice(0, pageSize).map((r) => (
+                <tr key={r.id}>
+                  <td className="px-6 py-3 font-mono text-[10px] text-gray-500">{r.id}</td>
+                  <td className="px-6 py-3 text-gray-900 dark:text-gray-100 font-medium">{r.kwh.toFixed(3)} kWh</td>
+                  <td className="px-6 py-3 text-gray-500">{new Date(r.timestamp).toLocaleString()}</td>
+                  <td className="px-6 py-3 text-right">
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${r.verified ? 'bg-green-100 text-green-700 dark:bg-green-900/30' : 'bg-yellow-100 text-yellow-700'}`}>
+                      {r.verified ? 'Verified' : 'Pending'}
+                    </span>
                   </td>
                 </tr>
               ) : readingsPage?.readings.map((r) => (

@@ -12,6 +12,11 @@
  *   AWS_REGION, MINTER_SECRET_ARN
  * Optional:
  *   MINTER_PREVIOUS_SECRET_ARN  — set during the 24-h grace window
+ *
+ * Internal bridge secret (zero-trust auth between Next.js and bridge):
+ *   INTERNAL_BRIDGE_SECRET_ARN  — Secrets Manager ARN (prod)
+ *   INTERNAL_BRIDGE_SECRET      — plain env fallback (local dev only)
+ * Secret JSON shape: { "secret": "<shared secret>", "rotatedAt": "<ISO-8601>" }
  */
 
 import {
@@ -23,9 +28,38 @@ import { createClient } from '@supabase/supabase-js'
 
 const ROTATION_GRACE_MS = 24 * 60 * 60 * 1000 // 24 hours
 
+/**
+ * Service-role credentials are long-lived and bypass RLS, so they must be
+ * rotated on a fixed schedule. Alerting fires once the credential is within
+ * SERVICE_ROLE_ALERT_WINDOW_MS of its expiry.
+ */
+export const SERVICE_ROLE_ROTATION_INTERVAL_MS = 90 * 24 * 60 * 60 * 1000 // 90 days
+export const SERVICE_ROLE_ALERT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
+
 interface SecretPayload {
   key: string
   rotatedAt: string
+}
+
+export interface ServiceRoleRotationMeta {
+  /** Identifier/version of the credential being replaced. */
+  oldKeyVersion: string
+  /** Identifier/version of the newly issued credential. */
+  newKeyVersion: string
+  /** Who (or what) performed the rotation. */
+  actor: string
+  /** ISO-8601 timestamp of the rotation. Defaults to now. */
+  rotatedAt?: string
+}
+
+export interface ServiceRoleCredentialStatus {
+  keyVersion: string
+  rotatedAt: string
+  expiresAt: string
+  ageMs: number
+  msUntilExpiry: number
+  /** True once the credential is inside the alerting window (or already expired). */
+  approachingExpiry: boolean
 }
 
 const smClient = new SecretsManagerClient({
@@ -36,6 +70,12 @@ async function fetchSecret(arn: string): Promise<SecretPayload> {
   const res = await smClient.send(new GetSecretValueCommand({ SecretId: arn }))
   if (!res.SecretString) throw new Error(`Secret ${arn} has no string value`)
   return JSON.parse(res.SecretString) as SecretPayload
+}
+
+async function fetchInternalSecret(arn: string): Promise<InternalSecretPayload> {
+  const res = await smClient.send(new GetSecretValueCommand({ SecretId: arn }))
+  if (!res.SecretString) throw new Error(`Secret ${arn} has no string value`)
+  return JSON.parse(res.SecretString) as InternalSecretPayload
 }
 
 async function auditLog(event: string, meta: Record<string, unknown>) {
@@ -52,6 +92,48 @@ async function auditLog(event: string, meta: Record<string, unknown>) {
   } catch {
     // audit failures must never break the hot path
     console.error('[secrets] audit log write failed', { event })
+  }
+}
+
+/**
+ * Records a service-role credential rotation in the audit log.
+ * Failures are non-fatal (see auditLog) so rotation is never blocked by
+ * an audit outage.
+ */
+export async function recordServiceRoleRotation(
+  meta: ServiceRoleRotationMeta,
+): Promise<void> {
+  const rotatedAt = meta.rotatedAt ?? new Date().toISOString()
+  await auditLog('service_role_key_rotated', {
+    oldKeyVersion: meta.oldKeyVersion,
+    newKeyVersion: meta.newKeyVersion,
+    actor: meta.actor,
+    rotatedAt,
+    expiresAt: new Date(
+      new Date(rotatedAt).getTime() + SERVICE_ROLE_ROTATION_INTERVAL_MS,
+    ).toISOString(),
+  })
+}
+
+/**
+ * Computes rotation/expiry status for a service-role credential so alerting
+ * can detect credentials approaching expiry.
+ */
+export function getServiceRoleCredentialStatus(
+  keyVersion: string,
+  rotatedAt: string,
+  now: number = Date.now(),
+): ServiceRoleCredentialStatus {
+  const rotatedMs = new Date(rotatedAt).getTime()
+  const expiresMs = rotatedMs + SERVICE_ROLE_ROTATION_INTERVAL_MS
+  const msUntilExpiry = expiresMs - now
+  return {
+    keyVersion,
+    rotatedAt: new Date(rotatedMs).toISOString(),
+    expiresAt: new Date(expiresMs).toISOString(),
+    ageMs: now - rotatedMs,
+    msUntilExpiry,
+    approachingExpiry: msUntilExpiry <= SERVICE_ROLE_ALERT_WINDOW_MS,
   }
 }
 
@@ -107,4 +189,36 @@ export async function getValidMinterKeypairs(): Promise<Keypair[]> {
   }
 
   return keypairs
+}
+
+/**
+ * Returns the shared internal secret used to authenticate Next.js → bridge calls.
+ * Loaded from Secrets Manager (INTERNAL_BRIDGE_SECRET_ARN) so it rotates through
+ * the same process as the minter key, with a plain-env fallback for local dev.
+ * Every load is written to the audit log.
+ */
+export async function getInternalBridgeSecret(): Promise<string> {
+  const arn = process.env.INTERNAL_BRIDGE_SECRET_ARN
+
+  // Local dev fallback
+  if (!arn) {
+    const localSecret = process.env.INTERNAL_BRIDGE_SECRET
+    if (!localSecret) {
+      throw new Error(
+        'Set INTERNAL_BRIDGE_SECRET_ARN (prod) or INTERNAL_BRIDGE_SECRET (dev)',
+      )
+    }
+    return localSecret
+  }
+
+  const payload = await fetchInternalSecret(arn)
+  if (!payload.secret) {
+    throw new Error(`Secret ${arn} is missing the "secret" field`)
+  }
+
+  await auditLog('internal_bridge_secret_loaded', {
+    rotatedAt: payload.rotatedAt,
+  })
+
+  return payload.secret
 }

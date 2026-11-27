@@ -165,6 +165,27 @@ export function ProposalListSkeleton({ count = 2 }: { count?: number }) {
   )
 }
 
+/** Skeleton that matches the transfer history timeline */
+export function TransferHistoryTimelineSkeleton({ items = 3 }: { items?: number }) {
+  return (
+    <div
+      aria-busy="true"
+      aria-label="Loading transfer history"
+      className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-gray-900"
+    >
+      <Skeleton className="mb-4 h-5 w-40" />
+      <ul className="space-y-4">
+        {Array.from({ length: items }).map((_, i) => (
+          <li key={i} aria-hidden="true" className="space-y-2">
+            <Skeleton className="h-3 w-32" />
+            <Skeleton className="h-4 w-full max-w-sm" />
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 /** Skeleton for a Section/Row panel (verify page style) */
 export function SectionSkeleton({ rows = 4 }: { rows?: number }) {
   return (

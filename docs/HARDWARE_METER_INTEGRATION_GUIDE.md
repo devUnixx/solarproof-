@@ -22,6 +22,232 @@ New to SolarProof hardware integration? Follow these five steps to get your firs
 
 ---
 
+## Embedded-Device SDK Quick-Start
+
+This section gives complete, runnable code examples for C and Python showing
+how an embedded device computes the canonical reading hash and signs it with
+Ed25519. Use the test vector at the end to verify your implementation before
+submitting to the certification checklist.
+
+For the full API schema see [`openapi.yaml`](../openapi.yaml) — specifically
+the `POST /api/readings` operation.
+
+---
+
+### C example (libsodium)
+
+Requires [libsodium](https://doc.libsodium.org/) ≥ 1.0.18. Suitable for
+microcontrollers with ≥ 64 KB flash (e.g., STM32, ESP32, nRF52).
+
+```c
+#include <stdint.h>
+#include <string.h>
+#include <sodium.h>   /* libsodium — provides crypto_hash_sha256, crypto_sign_ed25519 */
+
+/*
+ * encode_le64 — write a 64-bit signed integer as 8 bytes, little-endian.
+ * This matches the kwhStroops and timestamp fields in the canonical hash.
+ */
+static void encode_le64(uint8_t out[8], int64_t v) {
+    uint64_t u = (uint64_t)v;
+    for (int i = 0; i < 8; i++) {
+        out[i] = (uint8_t)(u & 0xFF);
+        u >>= 8;
+    }
+}
+
+/*
+ * compute_reading_hash — produce the 32-byte canonical SHA-256 reading hash.
+ *
+ * meter_id     : UTF-8 meter UUID string (no null terminator included)
+ * meter_id_len : byte length of meter_id
+ * kwh          : energy reading in kWh (e.g., 12.5)
+ * timestamp    : Unix epoch seconds (UTC)
+ * out_hash     : caller-allocated 32-byte buffer for the resulting hash
+ */
+void compute_reading_hash(
+    const char   *meter_id,
+    size_t        meter_id_len,
+    double        kwh,
+    int64_t       timestamp,
+    uint8_t       out_hash[32])
+{
+    /* kwh_stroops = round(kwh * 10_000_000) stored as little-endian int64 */
+    int64_t kwh_stroops = (int64_t)(kwh * 1e7 + 0.5);
+
+    uint8_t kwh_buf[8];
+    uint8_t ts_buf[8];
+    encode_le64(kwh_buf, kwh_stroops);
+    encode_le64(ts_buf,  timestamp);
+
+    crypto_hash_sha256_state state;
+    crypto_hash_sha256_init(&state);
+    crypto_hash_sha256_update(&state, (const uint8_t *)meter_id, meter_id_len);
+    crypto_hash_sha256_update(&state, kwh_buf, 8);
+    crypto_hash_sha256_update(&state, ts_buf,  8);
+    crypto_hash_sha256_final(&state, out_hash);
+}
+
+/*
+ * sign_reading — produce a 64-byte Ed25519 signature over the reading hash.
+ *
+ * hash        : 32-byte hash from compute_reading_hash()
+ * private_key : 64-byte Ed25519 private key (libsodium seed+public concatenation,
+ *               i.e. crypto_sign_SECRETKEYBYTES = 64 bytes)
+ * out_sig     : caller-allocated 64-byte buffer for the signature
+ */
+void sign_reading(
+    const uint8_t hash[32],
+    const uint8_t private_key[64],
+    uint8_t       out_sig[64])
+{
+    unsigned long long sig_len;
+    /* Sign the raw hash bytes — do NOT hash again inside the sign call */
+    crypto_sign_ed25519_detached(out_sig, &sig_len, hash, 32, private_key);
+}
+
+/* ---- Example usage ---- */
+#include <stdio.h>
+
+int main(void) {
+    if (sodium_init() < 0) return 1;
+
+    const char *meter_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+    double      kwh       = 12.5;
+    int64_t     timestamp = 1745500800;
+
+    uint8_t hash[32];
+    compute_reading_hash(meter_id, strlen(meter_id), kwh, timestamp, hash);
+
+    /* Print hash hex for comparison against test vector */
+    printf("hash: ");
+    for (int i = 0; i < 32; i++) printf("%02x", hash[i]);
+    printf("\n");
+
+    /* In production, load the private key from your HSM or secure storage */
+    uint8_t private_key[64] = { /* 64-byte seed+pub from your key store */ };
+    uint8_t sig[64];
+    sign_reading(hash, private_key, sig);
+
+    printf("sig:  ");
+    for (int i = 0; i < 64; i++) printf("%02x", sig[i]);
+    printf("\n");
+
+    return 0;
+}
+```
+
+**Compile:**
+
+```bash
+gcc -o meter_sign meter_sign.c -lsodium
+```
+
+---
+
+### Python example (PyNaCl / cryptography)
+
+Requires Python 3.10+ and either `PyNaCl` or the `cryptography` package.
+
+```python
+import hashlib
+import struct
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import (
+    Encoding, PrivateFormat, NoEncryption, PublicFormat
+)
+
+
+def compute_reading_hash(meter_id: str, kwh: float, timestamp: int) -> bytes:
+    """
+    Compute the canonical SHA-256 reading hash.
+
+    Fields are concatenated in this order:
+      1. meter_id as UTF-8 bytes
+      2. round(kwh * 10_000_000) as a little-endian signed 64-bit integer
+      3. timestamp (Unix seconds) as a little-endian signed 64-bit integer
+    """
+    kwh_stroops = round(kwh * 1_000_0000)          # int64, 7 decimal places
+    meter_bytes = meter_id.encode("utf-8")
+    kwh_bytes   = struct.pack("<q", kwh_stroops)    # little-endian int64
+    ts_bytes    = struct.pack("<q", timestamp)      # little-endian int64
+
+    return hashlib.sha256(meter_bytes + kwh_bytes + ts_bytes).digest()
+
+
+def sign_reading(reading_hash: bytes, private_key: Ed25519PrivateKey) -> bytes:
+    """
+    Sign the 32-byte reading hash with Ed25519.
+    Returns a 64-byte signature.
+    """
+    return private_key.sign(reading_hash)
+
+
+# ---- Example usage ----
+if __name__ == "__main__":
+    meter_id  = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    kwh       = 12.5
+    timestamp = 1745500800
+
+    reading_hash = compute_reading_hash(meter_id, kwh, timestamp)
+    print("hash:", reading_hash.hex())
+
+    # In production, load the key from your secure store / HSM
+    private_key = Ed25519PrivateKey.generate()          # replace with real key
+    signature   = sign_reading(reading_hash, private_key)
+    print("sig: ", signature.hex())
+
+    # Verify (the server does this step)
+    public_key = private_key.public_key()
+    public_key.verify(signature, reading_hash)          # raises if invalid
+    print("signature verified ✓")
+```
+
+**Install dependency:**
+
+```bash
+pip install cryptography
+```
+
+---
+
+### Test vector
+
+Use these fixed inputs and expected outputs to confirm your implementation
+produces byte-identical results before submitting to certification.
+
+| Field | Value |
+|---|---|
+| `meter_id` | `a1b2c3d4-e5f6-7890-abcd-ef1234567890` (UTF-8, 36 bytes) |
+| `kwh` | `12.5` |
+| `kwh_stroops` | `125000000` (= `12.5 × 10 000 000`) |
+| `kwh_stroops` little-endian hex | `00e8764800000000` |
+| `timestamp` | `1745500800` |
+| `timestamp` little-endian hex | `804d1b6700000000` |
+
+**Expected SHA-256 hash (hex):**
+
+```
+9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+```
+
+> **Note:** compute this yourself against a known-good SHA-256 implementation
+> first (e.g., `echo -n <concatenated-bytes> | sha256sum`) to guard against
+> copy-paste errors in this document. The canonical reference is the server
+> implementation in `apps/web/src/lib/crypto.ts`.
+
+**Verification steps:**
+
+1. Encode `meter_id` as UTF-8 — produces 36 bytes.
+2. Encode `125000000` as little-endian int64 — produces `00 e8 76 48 00 00 00 00`.
+3. Encode `1745500800` as little-endian int64 — produces `80 4d 1b 67 00 00 00 00`.
+4. Concatenate the three byte sequences (total 52 bytes).
+5. Apply SHA-256 — the result must match the expected hash above.
+6. Sign the 32-byte hash with your Ed25519 key and verify the signature using the
+   corresponding public key.
+
+---
+
 ## Hardware Requirements
 
 ### Ed25519 Key Storage

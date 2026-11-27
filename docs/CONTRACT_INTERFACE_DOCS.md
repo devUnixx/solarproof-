@@ -70,6 +70,19 @@ SEP-41 compliant certificate token where 1 token = 1 kWh of verified renewable e
   - Returns: `()`
   - Authorization: requires current `admin` signature
   - Errors: `not initialized`
+  - Emits: `minter_updated` event `(old_minter, new_minter)`
+
+- `pause()`
+  - Returns: `()`
+  - Authorization: requires current `admin` signature
+  - Errors: `not initialized`, `already paused`
+  - Emits: `paused` event `(admin)`
+
+- `unpause()`
+  - Returns: `()`
+  - Authorization: requires current `admin` signature
+  - Errors: `not initialized`, `not paused`
+  - Emits: `unpaused` event `(admin)`
 
 - `admin() -> Address`
   - Returns: current admin address
@@ -80,6 +93,15 @@ SEP-41 compliant certificate token where 1 token = 1 kWh of verified renewable e
 - `mint`: published on successful `mint`
 - `burn`: published on successful `burn`
 - `transfer`: published on successful `transfer`
+- `minter_updated`: published on successful `set_minter`
+  - Topics: `(Symbol("minter_updated"),)`
+  - Data: `(old_minter: Address, new_minter: Address)`
+- `paused`: published on successful `pause`
+  - Topics: `(Symbol("paused"),)`
+  - Data: `(admin: Address)`
+- `unpaused`: published on successful `unpause`
+  - Topics: `(Symbol("unpaused"),)`
+  - Data: `(admin: Address)`
 
 ### Example CLI invocations
 
@@ -130,6 +152,13 @@ Immutable on-chain anchor of Ed25519-signed meter readings for later verificatio
   - Returns admin address
   - Errors: `not initialized`
 
+- `rotate_admin(new_admin: Address)`
+  - `new_admin`: address to become the new administrator
+  - Returns: `()`
+  - Authorization: requires current `admin` signature
+  - Errors: `not initialized`
+  - Emits: `admin_rotated` event `(old_admin, new_admin)`
+
 - `extend_bucket_ttl(bucket_id: u32, threshold: u32, extend_to: u32)`
   - `bucket_id`: bucket index for anchor storage (0-1023)
   - `threshold`: extend only when current TTL is below this value
@@ -153,6 +182,15 @@ Immutable on-chain anchor of Ed25519-signed meter readings for later verificatio
   - `min_extension`: minimum extension required to apply the update
   - `max_extension`: maximum allowed extension
   - Requires admin authorization
+
+### Events
+
+- `anchor`: published on successful `anchor`
+  - Topics: `(Symbol("anchor"),)`
+  - Data: `(reading_hash: BytesN<32>)`
+- `admin_rotated`: published on successful `rotate_admin`
+  - Topics: `(Symbol("admin_rotated"),)`
+  - Data: `(old_admin: Address, new_admin: Address)`
 
 ### Audit anchor record format
 
@@ -226,6 +264,22 @@ Cooperative governance contract for proposal creation, voting, and proposal fina
 - `proposal_count() -> u32`
   - Returns count of proposals created
 
+- `rotate_admin(new_admin: Address)`
+  - `new_admin`: address to become the new administrator
+  - Returns: `()`
+  - Authorization: requires current `admin` signature
+  - Errors: `not initialized`
+  - Emits: `admin_rotated` event `(old_admin, new_admin)`
+
+### Events
+
+- `final`: published on successful `finalize`
+  - Topics: `(Symbol("final"),)`
+  - Data: `(proposal_id: u32, status: ProposalStatus)`
+- `admin_rotated`: published on successful `rotate_admin`
+  - Topics: `(Symbol("admin_rotated"),)`
+  - Data: `(old_admin: Address, new_admin: Address)`
+
 ### Example CLI invocations
 
 ```bash
@@ -238,6 +292,52 @@ stellar contract invoke --id $GOV_ID --source $VOTER_SECRET_KEY --network testne
 stellar contract invoke --id $GOV_ID --source $PROPOSER_SECRET_KEY --network testnet \
   -- finalize --proposal_id 1
 ```
+
+## multisig_admin
+
+### Description
+Multi-signature administration contract used to rotate the admin of the other contracts through a threshold of signer approvals.
+
+### Public functions
+
+- `initialize(admin: Address, signers: Vec<Address>, threshold: u32)`
+  - `admin`: initial administrator address
+  - `signers`: authorized signer addresses
+  - `threshold`: number of approvals required to execute an action
+  - Returns: `()`
+  - Errors: `already initialized`, `threshold must be positive`, `threshold exceeds signer count`
+
+- `rotate_admin(new_admin: Address)`
+  - `new_admin`: address to become the new administrator
+  - Returns: `()`
+  - Authorization: requires the configured signer threshold
+  - Errors: `not initialized`, `insufficient approvals`
+  - Emits: `admin_rotated` event `(old_admin, new_admin)`
+
+- `admin() -> Address`
+  - Returns current admin address
+  - Errors: `not initialized`
+
+### Events
+
+- `admin_rotated`: published on successful `rotate_admin`
+  - Topics: `(Symbol("admin_rotated"),)`
+  - Data: `(old_admin: Address, new_admin: Address)`
+
+### Example CLI invocations
+
+```bash
+stellar contract invoke --id $MULTISIG_ID --source $SIGNER_SECRET_KEY --network testnet \
+  -- rotate_admin --new_admin NEW_ADMIN_ADDRESS
+```
+
+## Event consumption notes
+
+- All events use a single `Symbol` topic identifying the event kind, so indexers can filter by topic without decoding the data payload.
+- `minter_updated`, `paused`, `unpaused`, and `admin_rotated` are emitted only after the corresponding state change succeeds; failed invocations emit nothing.
+- `admin_rotated` shares the same topic and payload shape across `audit_registry`, `community_governance`, and `multisig_admin`, so a single subscription can track admin changes across all contracts.
+- Consumers should decode the data payload as a tuple in the order documented above and should not rely on event ordering across contracts within a ledger.
+- To follow admin changes, subscribe to the `admin_rotated` topic on each contract ID and reconcile the `new_admin` value against stored admin state.
 
 ## Contract addresses
 
