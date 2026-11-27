@@ -123,78 +123,86 @@ GitHub → Actions → Deploy Contracts → Run workflow
 
 ---
 
-## 5. Infrastructure as code (Terraform)
+## 4a. Web image publishing (GHCR)
 
-Production Supabase and Vercel resources are managed with Terraform. Manual changes in the cloud consoles will show up as drift in `terraform plan` and should be reconciled through code.
+The web app Docker image is built and pushed to the GitHub Container Registry (GHCR) on every merge to `main`, so deployments pull a pre-built image instead of rebuilding from scratch.
 
-### 5a. Module layout
+### Image names and tags
 
-```
-infra/
-├── backend.tf              # S3 + DynamoDB remote state backend
-├── main.tf                 # Root module wiring
-├── variables.tf
-├── outputs.tf
-├── modules/
-│   ├── supabase/           # Supabase project, Edge Functions, secrets
-│   │   ├── main.tf
-│   │   ├── variables.tf
-│   │   └── outputs.tf
-│   └── vercel/             # Vercel project and environment variables
-│       ├── main.tf
-│       ├── variables.tf
-│       └── outputs.tf
-└── envs/
-    ├── staging/
-    └── production/
-```
+| Tag | When it is pushed | Example |
+| --- | --- | --- |
+| `ghcr.io/<owner>/solarproof/web:<sha>` | Every merge to `main` | `ghcr.io/acme/solarproof/web:3f9c1ab` |
+| `ghcr.io/<owner>/solarproof/web:latest` | Every merge to `main` | `ghcr.io/acme/solarproof/web:latest` |
+| `ghcr.io/<owner>/solarproof/web:<semver>` | On release (git tag `v*.*.*`) | `ghcr.io/acme/solarproof/web:1.4.0` |
 
-- **`modules/supabase`** provisions the Supabase project, deploys Edge Functions from `supabase/functions/`, and manages project secrets (service role key, `MINTER_SECRET_KEY`, etc.). Secret values are supplied via variables and never committed.
-- **`modules/vercel`** provisions the Vercel project, links it to the repository, and manages environment variables (`NEXT_PUBLIC_STELLAR_NETWORK`, contract IDs, Supabase URL/anon key) per environment.
+`<owner>` is the GitHub organization or user that owns the repository (lowercased). The `<sha>` tag is the short git commit SHA of the merge commit, which lets you pin a deployment to an exact revision.
 
-### 5b. Remote state backend
-
-State is stored in an encrypted S3 bucket with DynamoDB state locking, configured in `infra/backend.tf`:
-
-```hcl
-terraform {
-  backend "s3" {
-    bucket         = "solarproof-terraform-state"
-    key            = "production/terraform.tfstate"
-    region         = "us-east-1"
-    dynamodb_table = "solarproof-terraform-locks"
-    encrypt        = true
-  }
-}
-```
-
-The bucket has versioning and server-side encryption (SSE-KMS) enabled, and public access is blocked. The DynamoDB table uses `LockID` as its partition key. Backend credentials come from the CI OIDC role or your local AWS profile — never from committed files.
-
-### 5c. Running plan and apply
+### Pulling the image
 
 ```bash
-cd infra/envs/production
-terraform init          # downloads providers and configures the S3 backend
-terraform plan          # review the diff before applying
-terraform apply         # apply after review (requires approval in CI)
+docker pull ghcr.io/<owner>/solarproof/web:<sha>
+docker pull ghcr.io/<owner>/solarproof/web:latest
 ```
 
-Use `infra/envs/staging` for non-production changes. Never run `apply` against production from a laptop without a second reviewer.
+### Image pull secret for Vercel / ECS
 
-### 5d. Plan on pull requests
+GHCR packages are private by default. Configure a pull secret wherever the image is deployed:
 
-The `.github/workflows/terraform-plan.yml` workflow runs on every PR that touches `infra/**`:
+- **Vercel** — add the following environment variables to the project (Production and Preview):
+  - `DOCKER_REGISTRY_URL=ghcr.io`
+  - `DOCKER_REGISTRY_USERNAME=<github-username>`
+  - `DOCKER_REGISTRY_PASSWORD=<personal-access-token>` (a classic PAT with `read:packages` scope)
+- **AWS ECS** — store the same credentials in AWS Secrets Manager and reference them from the task definition's `repositoryCredentials.credentialsParameter`, or create an ECS pull secret:
 
-1. Authenticates to AWS via GitHub OIDC (no long-lived keys).
-2. Runs `terraform fmt -check` and `terraform validate`.
-3. Runs `terraform plan` for each environment and posts the diff as a PR comment (updated in place on subsequent pushes).
-4. Fails the check if the plan cannot be generated.
+```bash
+aws secretsmanager create-secret \
+  --name solarproof/ghcr-pull-secret \
+  --secret-string '{"username":"<github-username>","password":"<personal-access-token>"}'
+```
 
-`terraform apply` runs only from `main` after merge, gated by a manual approval on the protected `production` environment.
+Alternatively, make the package public in the repository's **Packages** settings to skip authentication entirely.
+
+### Image retention policy
+
+Only the last **20** image tags are retained in GHCR. Older tags are pruned automatically by the image publishing workflow; `latest` and any semver tags referenced by an active deployment are always kept. If you need to pin an older revision beyond the retention window, re-run the publish workflow for that commit.
 
 ---
 
-## 6. Verify deployed bytecode on Stellar Expert
+## 4b. Canary deployment (blue-green)
+
+The `.github/workflows/blue-green-deploy.yml` workflow deploys the new version alongside the current one and shifts traffic gradually instead of cutting over 100% at once.
+
+### Traffic ramp
+
+| Stage | Traffic to new version | Duration |
+| --- | --- | --- |
+| Canary | 10% | 5 minutes |
+| Promote | 50% | 5 minutes |
+| Full | 100% | — |
+
+Total ramp time is approximately 15 minutes.
+
+### Automatic rollback
+
+During each stage the workflow monitors the error rate of the new version. If the error rate exceeds **1%**, the workflow aborts the ramp, shifts 100% of traffic back to the previous version, and marks the deployment as failed.
+
+### Manual override (hotfixes)
+
+For urgent hotfixes you can skip the canary stages and cut over immediately. Trigger the workflow manually with the `skip_canary` input set to `true`:
+
+```
+GitHub → Actions → Blue-Green Deploy → Run workflow → skip_canary: true
+```
+
+When `skip_canary` is enabled, traffic moves to 100% immediately and the error-rate monitor is bypassed. Use this only for hotfixes that cannot wait for the full ramp.
+
+### Sentry release tracking
+
+Each deployment creates a Sentry release and sends a deployment event, so errors can be attributed to the exact version that was rolled out. The release name matches the image tag (`<sha>` or `<semver>`). Ensure `SENTRY_AUTH_TOKEN` and `SENTRY_ORG` / `SENTRY_PROJECT` are configured as GitHub Actions secrets.
+
+---
+
+## 5. Verify deployed bytecode on Stellar Expert
 
 After deployment, confirm the on-chain WASM matches your local build:
 
