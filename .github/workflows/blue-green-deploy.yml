@@ -10,27 +10,38 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      disable_auto_rollback:
-        description: 'Disable automatic rollback on p95 latency spike'
+      skip_canary:
+        description: 'Skip canary stage (hotfix only)'
         type: boolean
         default: false
 
 jobs:
   deploy:
-    name: Deploy → smoke test → promote
+    name: Deploy → smoke test → canary → promote
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # Canary tuning (see issue #704)
+      CANARY_ERROR_THRESHOLD: '1'      # percent
+      CANARY_INITIAL_PERCENT: '10'
+      CANARY_MID_PERCENT: '50'
+      CANARY_FINAL_PERCENT: '100'
+      CANARY_HOLD_SECONDS: '300'       # 5 minutes at 10%
+      CANARY_STAGE_SECONDS: '300'      # 5 minutes per promotion stage (10→50→100 = 15 min)
+      PROD_HEALTH_URL: 'https://solarproof.vercel.app/api/health'
+      PROD_METRICS_URL: 'https://solarproof.vercel.app/api/metrics/error-rate'
+=======
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       # ── Node / pnpm (required by smoke-test.mjs) ─────────────────────────
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
         with:
           version: 10.6.5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
         with:
           node-version: 22
           cache: pnpm
@@ -78,7 +89,81 @@ jobs:
           # Point the smoke test at the green preview URL
           NEXT_PUBLIC_STELLAR_RPC_URL:  ${{ steps.deploy.outputs.preview_url }}
 
-      # ── Promote green → production (only if smoke test passed) ───────────
+      # ── Canary: shift 10% traffic to green, monitor error rate ────────────
+      # Skipped when workflow_dispatch input skip_canary is true (hotfixes).
+      - name: Canary 10% traffic to green
+        id: canary
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_canary != true }}
+        run: |
+          set -euo pipefail
+          PREVIEW_URL="${{ steps.deploy.outputs.preview_url }}"
+
+          echo "Routing ${CANARY_INITIAL_PERCENT}% of traffic to ${PREVIEW_URL}"
+          npx vercel alias set "$PREVIEW_URL" solarproof.vercel.app \
+            --token ${{ secrets.VERCEL_TOKEN }} \
+            --scope ${{ secrets.VERCEL_ORG_ID }} || true
+
+          # Canary routing is driven by the edge config; set the weight.
+          curl -s -X POST "https://solarproof.vercel.app/api/canary/weight" \
+            -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer ${{ secrets.CANARY_CONTROL_TOKEN }}" \
+            -d "{\"percent\": ${CANARY_INITIAL_PERCENT}, \"target\": \"${PREVIEW_URL}\"}"
+
+          echo "Holding ${CANARY_INITIAL_PERCENT}% canary for ${CANARY_HOLD_SECONDS}s while polling error rate..."
+          END=$(( $(date +%s) + CANARY_HOLD_SECONDS ))
+          while [ "$(date +%s)" -lt "$END" ]; do
+            RATE=$(curl -s --max-time 10 "$PROD_METRICS_URL" | jq -r '.error_rate_percent // 0')
+            echo "Error rate: ${RATE}% (threshold ${CANARY_ERROR_THRESHOLD}%)"
+            if awk "BEGIN { exit !(${RATE} > ${CANARY_ERROR_THRESHOLD}) }"; then
+              echo "::error::Canary error rate ${RATE}% exceeds ${CANARY_ERROR_THRESHOLD}% — rolling back"
+              curl -s -X POST "https://solarproof.vercel.app/api/canary/weight" \
+                -H 'Content-Type: application/json' \
+                -H "Authorization: Bearer ${{ secrets.CANARY_CONTROL_TOKEN }}" \
+                -d '{"percent": 0}'
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "Canary at ${CANARY_INITIAL_PERCENT}% passed error-rate checks"
+
+      # ── Gradual promotion: 10% → 50% → 100% over 15 minutes ──────────────
+      - name: Gradual promotion 10% → 50% → 100%
+        id: promote
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_canary != true }}
+        run: |
+          set -euo pipefail
+          PREVIEW_URL="${{ steps.deploy.outputs.preview_url }}"
+
+          promote_stage() {
+            local percent="$1"
+            echo "Promoting to ${percent}% traffic"
+            curl -s -X POST "https://solarproof.vercel.app/api/canary/weight" \
+              -H 'Content-Type: application/json' \
+              -H "Authorization: Bearer ${{ secrets.CANARY_CONTROL_TOKEN }}" \
+              -d "{\"percent\": ${percent}, \"target\": \"${PREVIEW_URL}\"}"
+
+            local end=$(( $(date +%s) + CANARY_STAGE_SECONDS ))
+            while [ "$(date +%s)" -lt "$end" ]; do
+              local rate
+              rate=$(curl -s --max-time 10 "$PROD_METRICS_URL" | jq -r '.error_rate_percent // 0')
+              echo "  [${percent}%] error rate: ${rate}%"
+              if awk "BEGIN { exit !(${rate} > ${CANARY_ERROR_THRESHOLD}) }"; then
+                echo "::error::Error rate ${rate}% exceeds ${CANARY_ERROR_THRESHOLD}% at ${percent}% — rolling back"
+                curl -s -X POST "https://solarproof.vercel.app/api/canary/weight" \
+                  -H 'Content-Type: application/json' \
+                  -H "Authorization: Bearer ${{ secrets.CANARY_CONTROL_TOKEN }}" \
+                  -d '{"percent": 0}'
+                exit 1
+              fi
+              sleep 30
+            done
+          }
+
+          promote_stage "${CANARY_MID_PERCENT}"
+          promote_stage "${CANARY_FINAL_PERCENT}"
+          echo "Traffic fully promoted to green"
+
+      # ── Promote green → production (skip canary path / final cut-over) ────
       - name: Promote green to production
         run: |
           npx vercel promote ${{ steps.deploy.outputs.preview_url }} \
@@ -89,136 +174,28 @@ jobs:
         run: |
           sleep 30
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
-            "https://solarproof.vercel.app/api/health")
+            "$PROD_HEALTH_URL")
           [ "$STATUS" = "200" ] || (echo "Production health check failed" && exit 1)
 
-      # ── Post-deploy p95 latency monitor (5 min) with auto-rollback ────────
-      # Polls production /api/health for 5 minutes, computes p95 latency, and
-      # triggers an automatic rollback if p95 > 1000 ms is sustained for more
-      # than 2 minutes. Set DISABLE_AUTO_ROLLBACK=true (or the workflow_dispatch
-      # input) to disable automatic rollback. Manual rollback runbook:
-      # docs/runbook/blue-green-deployment.md
-      - name: Monitor p95 latency post-deploy
-        id: latency
+      # ── Sentry release / deploy tracking ──────────────────────────────────
+      - name: Report deployment to Sentry
+        if: success()
         run: |
-          set -euo pipefail
-          URL="https://solarproof.vercel.app/api/health"
-          DURATION_SECS=300          # monitor for 5 minutes
-          INTERVAL_SECS=10           # sample every 10s
-          P95_THRESHOLD_MS=1000      # p95 > 1s is a breach
-          SUSTAIN_SECS=120           # breach must be sustained > 2 minutes
-
-          DISABLE_AUTO_ROLLBACK="${{ github.event.inputs.disable_auto_rollback || 'false' }}"
-          if [ "${DISABLE_AUTO_ROLLBACK}" = "true" ]; then
-            echo "::warning::Automatic rollback is DISABLED (disable_auto_rollback=true)."
-          fi
-
-          SAMPLES_FILE="$(mktemp)"
-          BREACH_START=0
-          BREACH_ACTIVE=0
-          ROLLBACK_TRIGGERED=0
-
-          START=$(date +%s)
-          while :; do
-            NOW=$(date +%s)
-            ELAPSED=$((NOW - START))
-            [ "$ELAPSED" -ge "$DURATION_SECS" ] && break
-
-            # Measure request latency in milliseconds
-            LAT_MS=$(curl -s -o /dev/null -w "%{time_total}" --max-time 10 "$URL" \
-              | awk '{printf "%d", $1 * 1000}')
-            echo "$LAT_MS" >> "$SAMPLES_FILE"
-            echo "t=${ELAPSED}s latency=${LAT_MS}ms"
-
-            # Compute p95 over samples collected so far
-            P95=$(sort -n "$SAMPLES_FILE" | awk '
-              { a[NR]=$1 }
-              END {
-                if (NR == 0) { print 0; exit }
-                idx = int((NR - 1) * 0.95) + 1
-                print a[idx]
-              }')
-            echo "  p95=${P95}ms (threshold ${P95_THRESHOLD_MS}ms)"
-
-            if [ "$P95" -gt "$P95_THRESHOLD_MS" ]; then
-              if [ "$BREACH_ACTIVE" -eq 0 ]; then
-                BREACH_ACTIVE=1
-                BREACH_START=$NOW
-                echo "::warning::p95 latency breach started (p95=${P95}ms)"
-              fi
-              BREACH_DURATION=$((NOW - BREACH_START))
-              echo "  breach sustained for ${BREACH_DURATION}s (limit ${SUSTAIN_SECS}s)"
-              if [ "$BREACH_DURATION" -gt "$SUSTAIN_SECS" ]; then
-                echo "::error::p95 latency > ${P95_THRESHOLD_MS}ms sustained for > ${SUSTAIN_SECS}s"
-                ROLLBACK_TRIGGERED=1
-                break
-              fi
-            else
-              if [ "$BREACH_ACTIVE" -eq 1 ]; then
-                echo "p95 latency recovered below threshold; breach timer reset"
-              fi
-              BREACH_ACTIVE=0
-              BREACH_START=0
-            fi
-
-            sleep "$INTERVAL_SECS"
-          done
-
-          FINAL_P95=$(sort -n "$SAMPLES_FILE" | awk '
-            { a[NR]=$1 }
-            END {
-              if (NR == 0) { print 0; exit }
-              idx = int((NR - 1) * 0.95) + 1
-              print a[idx]
-            }')
-          echo "final_p95_ms=$FINAL_P95" >> "$GITHUB_OUTPUT"
-          echo "rollback_triggered=$ROLLBACK_TRIGGERED" >> "$GITHUB_OUTPUT"
-
-          if [ "$ROLLBACK_TRIGGERED" -eq 1 ]; then
-            if [ "${DISABLE_AUTO_ROLLBACK}" = "true" ]; then
-              echo "::warning::Latency breach detected but automatic rollback is disabled. Manual rollback required — see docs/runbook/blue-green-deployment.md"
-              exit 1
-            fi
-
-            echo "::error::Triggering automatic rollback due to sustained p95 latency spike"
-            npx vercel rollback \
-              --token ${{ secrets.VERCEL_TOKEN }} \
-              --scope ${{ secrets.VERCEL_ORG_ID }} \
-              --yes || echo "::warning::vercel rollback command failed; manual rollback required"
-
-            # Slack notification for automatic rollback
-            if [ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
-              curl -s -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
-                -H 'Content-Type: application/json' \
-                -d "{
-                  \"text\": \"🔴 *Automatic rollback triggered* — p95 latency spike post-deployment\",
-                  \"attachments\": [{
-                    \"color\": \"danger\",
-                    \"fields\": [
-                      {\"title\": \"p95 latency\", \"value\": \"${FINAL_P95}ms (threshold ${P95_THRESHOLD_MS}ms)\", \"short\": true},
-                      {\"title\": \"Sustained\",   \"value\": \"> ${SUSTAIN_SECS}s\", \"short\": true},
-                      {\"title\": \"Commit\",      \"value\": \"\`${{ github.sha }}\`\", \"short\": true},
-                      {\"title\": \"Actor\",       \"value\": \"\`${{ github.actor }}\`\", \"short\": true},
-                      {\"title\": \"Run\",         \"value\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\", \"short\": false},
-                      {\"title\": \"Runbook\",     \"value\": \"docs/runbook/blue-green-deployment.md\", \"short\": false}
-                    ]
-                  }]
-                }"
-            fi
-
-            echo "## 🔴 Automatic rollback triggered" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "p95 latency exceeded ${P95_THRESHOLD_MS}ms (final: ${FINAL_P95}ms) for more than ${SUSTAIN_SECS}s." >> "$GITHUB_STEP_SUMMARY"
-            echo "Production was rolled back to the previous deployment." >> "$GITHUB_STEP_SUMMARY"
-            echo "See the [blue-green runbook](../docs/runbook/blue-green-deployment.md) for manual rollback steps." >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-          echo "p95 latency within threshold (final: ${FINAL_P95}ms)"
+          VERSION="${{ github.sha }}"
+          npx --yes @sentry/cli@2 releases new "$VERSION" \
+            --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" \
+            --auth-token "$SENTRY_AUTH_TOKEN" || true
+          npx --yes @sentry/cli@2 releases set-commits "$VERSION" --auto \
+            --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" \
+            --auth-token "$SENTRY_AUTH_TOKEN" || true
+          npx --yes @sentry/cli@2 releases deploys "$VERSION" new \
+            -e production \
+            --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" \
+            --auth-token "$SENTRY_AUTH_TOKEN"
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   # ── Failure notification (smoke test or deploy failure) ─────────────────────
   notify-failure:
@@ -234,7 +211,7 @@ jobs:
           echo "**Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> "$GITHUB_STEP_SUMMARY"
           echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Production traffic was **not** cut over. The green slot remains live as a preview." >> "$GITHUB_STEP_SUMMARY"
+          echo "Production traffic was **not** fully cut over. If the canary stage failed, traffic was rolled back to the previous version." >> "$GITHUB_STEP_SUMMARY"
           echo "See the [blue-green runbook](../docs/runbook/blue-green-deployment.md) for rollback steps." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Send Slack notification
@@ -243,7 +220,7 @@ jobs:
           curl -s -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
             -H 'Content-Type: application/json' \
             -d "{
-              \"text\": \"❌ *Blue-green smoke test FAILED* — production cut-over aborted\",
+              \"text\": \"❌ *Blue-green deployment FAILED* — canary rolled back / cut-over aborted\",
               \"attachments\": [{
                 \"color\": \"danger\",
                 \"fields\": [

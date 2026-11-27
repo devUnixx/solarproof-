@@ -198,7 +198,7 @@ export default function AdminPage() {
             {(opsError as Error).message}
           </p>
         )}
-        <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">
+        <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-800">
           <table
             className="min-w-full divide-y divide-gray-200 bg-white text-sm dark:divide-gray-800 dark:bg-gray-900"
             aria-label="Operators"

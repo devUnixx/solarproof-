@@ -41,6 +41,7 @@ create table certificates (
   mint_tx_hash text not null unique,
   kwh numeric(12,4) not null,
   issued_at timestamptz not null default now(),
+  expires_at timestamptz,   -- nullable; null = never expires
   retired boolean not null default false,
   retired_at timestamptz,
   retired_by text
@@ -56,88 +57,115 @@ create index on readings(reading_hash);
 create index on certificates(cooperative_id);
 create index on certificates(reading_hash);
 create index on certificates(mint_tx_hash);
+create index on certificates(expires_at);
 ```
 
-## Connection Pooling (PgBouncer)
+---
 
-Direct Supabase connections from Next.js serverless functions exhaust the
-database connection limit under load. All server-side database access must go
-through PgBouncer (Supabase's built-in pooler) instead of the direct connection.
+## RLS Policy Matrix
 
-### Pooled connection string
+Row Level Security is enabled on all tables. The API uses the Supabase **service role key** (bypasses RLS entirely) for server-side operations. Direct client connections use a JWT carrying `app_metadata.cooperative_id` and `app_metadata.role`.
 
-Use the pooler host/port (port `6543`, transaction mode) for application
-traffic, and keep the direct connection (port `5432`) only for migrations:
+**Role definitions used in this matrix:**
 
-```bash
-# Application (serverless functions) — pooled, transaction mode
-DATABASE_URL="postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1"
+| Role | Description |
+|---|---|
+| `member` | Authenticated operator; JWT carries `cooperative_id` |
+| `admin` | Authenticated operator with `role = 'admin'` in JWT |
+| `service_role` | Server-side API key; bypasses RLS |
+| `anon` | Unauthenticated request |
 
-# Migrations / admin tasks only — direct connection
-DIRECT_URL="postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres"
-```
+Legend: ✅ allowed · ❌ denied · `own` = rows belonging to the caller's cooperative only
 
-Notes:
+### Core tables
 
-- `pgbouncer=true` tells Prisma to disable prepared statements, which are not
-  supported in transaction pooling mode.
-- `connection_limit=1` keeps each serverless instance to a single pooled
-  connection; PgBouncer multiplexes many instances over a small server-side
-  pool.
-- Never use the direct `5432` URL from serverless functions.
+| Table | Role | SELECT | INSERT | UPDATE | DELETE | Notes |
+|---|---|---|---|---|---|---|
+| `cooperatives` | member | ✅ own | ❌ | ❌ | ❌ | Read own cooperative row |
+| `cooperatives` | admin | ✅ all | ✅ | ✅ | ✅ | Full access |
+| `cooperatives` | service_role | ✅ all | ✅ | ✅ | ✅ | Bypasses RLS |
+| `cooperatives` | anon | ❌ | ❌ | ❌ | ❌ | |
+| `meters` | member | ✅ own | ❌ | ❌ | ❌ | Via `cooperative_id` join |
+| `meters` | admin | ✅ all | ✅ | ✅ | ✅ | |
+| `meters` | service_role | ✅ all | ✅ | ✅ | ✅ | |
+| `meters` | anon | ❌ | ❌ | ❌ | ❌ | |
+| `readings` | member | ✅ own | ❌ | ❌ | ❌ | Via `meter_id → cooperative_id` |
+| `readings` | admin | ✅ all | ✅ | ✅ | ✅ | |
+| `readings` | service_role | ✅ all | ✅ | ✅ | ✅ | |
+| `readings` | anon | ❌ | ❌ | ❌ | ❌ | |
+| `certificates` | member | ✅ own | ❌ | ❌ | ❌ | Via `cooperative_id` |
+| `certificates` | admin | ✅ all | ✅ | ✅ | ✅ | |
+| `certificates` | service_role | ✅ all | ✅ | ✅ | ✅ | |
+| `certificates` | anon | ❌ | ❌ | ❌ | ❌ | |
 
-### Tuning the pool size
+### Marketplace
 
-Size the server-side pool for the expected serverless concurrency:
+| Table | Role | SELECT | INSERT | UPDATE | DELETE | Notes |
+|---|---|---|---|---|---|---|
+| `marketplace_listings` | member | ✅ active + own | ✅ own | ✅ own | ✅ own | Active listings visible to all operators |
+| `marketplace_listings` | admin | ✅ all | ✅ | ✅ | ✅ | |
+| `marketplace_listings` | service_role | ✅ all | ✅ | ✅ | ✅ | |
+| `marketplace_listings` | anon | ❌ | ❌ | ❌ | ❌ | |
 
-```
-pool_size = expected_concurrent_requests / number_of_function_instances
-```
+### Audit log
 
-Example: 500 concurrent users spread over ~50 warm function instances gives
-`pool_size = 500 / 50 = 10` server-side connections per pool. Configure this
-via the Supabase pooler settings (`default_pool_size`, `max_client_conn`) or
-the `PGBOUNCER_POOL_SIZE` environment variable used by the deployment.
+| Table | Role | SELECT | INSERT | UPDATE | DELETE | Notes |
+|---|---|---|---|---|---|---|
+| `audit_log` | member | ❌ | ❌ | ❌ | ❌ | Write via service_role only |
+| `audit_log` | admin | ✅ all | ✅ | ❌ | ❌ | Append-only; UPDATE/DELETE blocked by rule |
+| `audit_log` | service_role | ✅ all | ✅ | ❌ | ❌ | Append-only |
+| `audit_log` | anon | ❌ | ❌ | ❌ | ❌ | |
+| `audit_logs` | member | ❌ | ❌ | ❌ | ❌ | Service role only |
+| `audit_logs` | service_role | ✅ all | ✅ | ❌ | ❌ | Append-only; UPDATE/DELETE revoked |
+| `audit_logs` | anon | ❌ | ❌ | ❌ | ❌ | |
 
-| Setting              | Value | Rationale                                   |
-| -------------------- | ----- | ------------------------------------------- |
-| `pool_mode`          | transaction | Best multiplexing for short serverless queries |
-| `default_pool_size`  | 10    | 500 concurrency / 50 instances              |
-| `max_client_conn`    | 1000  | Headroom above peak instance count          |
-| `connection_limit`   | 1     | Per serverless instance                     |
+### Session and webhook tables
 
-### Health check: pool saturation
+| Table | Role | SELECT | INSERT | UPDATE | DELETE | Notes |
+|---|---|---|---|---|---|---|
+| `operator_sessions` | member | ❌ | ❌ | ❌ | ❌ | Service role only |
+| `operator_sessions` | service_role | ✅ all | ✅ | ✅ | ✅ | Manages refresh token rotation |
+| `webhook_endpoints` | member | ✅ own | ✅ own | ✅ own | ✅ own | Via `cooperative_id` |
+| `webhook_endpoints` | admin | ✅ all | ✅ | ✅ | ✅ | |
+| `webhook_endpoints` | service_role | ✅ all | ✅ | ✅ | ✅ | |
+| `webhook_logs` | member | ✅ own | ❌ | ❌ | ❌ | Via endpoint → cooperative |
+| `webhook_logs` | service_role | ✅ all | ✅ | ✅ | ✅ | Delivery retries managed server-side |
 
-`/api/health` reports pool saturation so alerts can fire before exhaustion:
+### Notification tables
 
-```json
-{
-  "status": "ok",
-  "db": {
-    "pool": {
-      "active": 7,
-      "idle": 3,
-      "waiting": 0,
-      "max": 10,
-      "saturation": 0.7
-    }
-  }
-}
-```
+| Table | Role | SELECT | INSERT | UPDATE | DELETE | Notes |
+|---|---|---|---|---|---|---|
+| `notification_preferences` | member | ✅ own | ✅ own | ✅ own | ✅ own | Via `cooperative_members` membership |
+| `notification_preferences` | service_role | ✅ all | ✅ | ✅ | ✅ | |
+| `notifications` | member | ✅ own | ✅ own | ✅ own | ✅ own | Via `cooperative_members` membership |
+| `notifications` | service_role | ✅ all | ✅ | ✅ | ✅ | |
+| `notification_deliveries` | member | ✅ own | ✅ own | ✅ own | ✅ own | Via notification → cooperative |
+| `notification_deliveries` | service_role | ✅ all | ✅ | ✅ | ✅ | Retry state managed server-side |
 
-`saturation = active / max`. Values above `0.8` should raise a warning and
-above `0.95` should be treated as unhealthy.
+> **Maintenance note:** Update this matrix in every PR that adds or modifies a migration. The security lead must review and sign off any change that widens access (adds a ✅ or relaxes a scope). Migrations that add new tables without RLS policies will fail the `validate-rls` CI check.
 
-### Load test (500 concurrent users)
+---
 
-Verify there are no connection errors under 500 concurrent users:
+## Migration Reference
 
-```bash
-# Against a staging deployment using the pooled connection string
-k6 run --vus 500 --duration 2m scripts/loadtest/connections.js
-```
-
-The test fails if any request returns a connection/pool error
-(`too many connections`, `connection pool timeout`, `ECONNRESET`). Confirm the
-health endpoint's `db.pool.waiting` stays at `0` and `saturation` stays below
-`0.95` throughout the run.
+| Migration file | Purpose |
+|---|---|
+| `20240101000001_initial_schema.sql` | Core tables: `cooperatives`, `meters`, `readings`, `certificates` |
+| `20240101000002_indexes.sql` | Performance indexes on core tables |
+| `20240101000003_rls.sql` | RLS policies for core tables + `marketplace_listings` |
+| `20240101000005_audit_log.sql` | `audit_log` append-only table |
+| `20240101000005_idempotency_keys.sql` | Idempotency key deduplication |
+| `20240101000005_jobs.sql` | Background job queue |
+| `20240101000005_certificate_retirement.sql` | Certificate retirement fields |
+| `20240101000005_retention_policy.sql` | Data retention configuration |
+| `20240101000006_webhooks.sql` | `webhook_endpoints` and `webhook_logs` |
+| `20240101000007_notifications.sql` | `notification_preferences`, `notifications`, `notification_deliveries` with RLS |
+| `20260426000007_operator_sessions.sql` | `operator_sessions` for JWT refresh rotation |
+| `20260427000008_meter_name_mint_diagnosis.sql` | Meter display name and mint diagnosis fields |
+| `20260428000009_perf_indexes.sql` | Additional performance indexes |
+| `20260530000009_meter_revocation.sql` | `revoked_at` and `revocation_reason` on `meters` |
+| `20260531000003_rls_policies.sql` | Refined RLS policies (member/admin separation) |
+| `20260601000000_create_audit_logs.sql` | `audit_logs` table (service-role-only, append-only) |
+| `20260601000009_multi_meter_support.sql` | Multi-meter per cooperative support |
+| `20260601000009_operator_suspended.sql` | Operator suspension flag |
+| `20260601000009_revoked_tokens.sql` | Revoked token tracking |

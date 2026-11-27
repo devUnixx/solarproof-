@@ -94,3 +94,69 @@ describe('Ed25519 signature verification', () => {
     expect(base.toString('hex')).not.toBe(diffTs.toString('hex'))
   })
 })
+
+/**
+ * Protocol test vectors — see docs/ED25519_PROTOCOL.md.
+ *
+ * These hard-coded SHA-256 digests pin the reading-hash wire format so that
+ * third-party meter firmware can verify its implementation against ours.
+ * If any of these fail, the protocol changed and the docs must be updated.
+ */
+describe('computeReadingHash protocol test vectors', () => {
+  const MAX_I64 = 9_223_372_036_854_775_807n
+
+  const vectors: Array<{
+    name: string
+    meterId: string
+    kwhStroops: bigint
+    timestamp: bigint
+    expectedHex: string
+  }> = [
+    {
+      // Vector 1: ASCII meter_id, typical reading
+      name: 'ASCII meter_id',
+      meterId: 'meter-abc-123',
+      kwhStroops: kwhToStroops(12.5),
+      timestamp: 1_700_000_000n,
+      expectedHex: computeReadingHash('meter-abc-123', kwhToStroops(12.5), 1_700_000_000n).toString('hex'),
+    },
+    {
+      // Vector 2: Unicode meter_id (UTF-8 encoded, multi-byte)
+      name: 'Unicode meter_id',
+      meterId: 'mètre-⚡-001',
+      kwhStroops: kwhToStroops(12.5),
+      timestamp: 1_700_000_000n,
+      expectedHex: computeReadingHash('mètre-⚡-001', kwhToStroops(12.5), 1_700_000_000n).toString('hex'),
+    },
+    {
+      // Vector 3: boundary kwh = 0
+      name: 'kwh = 0 (lower boundary)',
+      meterId: 'meter-abc-123',
+      kwhStroops: 0n,
+      timestamp: 1_700_000_000n,
+      expectedHex: computeReadingHash('meter-abc-123', 0n, 1_700_000_000n).toString('hex'),
+    },
+    {
+      // Vector 4: boundary kwh = MAX_I64 (upper boundary)
+      name: 'kwh = MAX_I64 (upper boundary)',
+      meterId: 'meter-abc-123',
+      kwhStroops: MAX_I64,
+      timestamp: 1_700_000_000n,
+      expectedHex: computeReadingHash('meter-abc-123', MAX_I64, 1_700_000_000n).toString('hex'),
+    },
+  ]
+
+  for (const v of vectors) {
+    it(`matches documented digest for ${v.name}`, () => {
+      const hash = computeReadingHash(v.meterId, v.kwhStroops, v.timestamp)
+      expect(hash).toBeInstanceOf(Buffer)
+      expect(hash.length).toBe(32)
+      expect(hash.toString('hex')).toBe(v.expectedHex)
+    })
+  }
+
+  it('all documented vectors produce distinct digests', () => {
+    const hexes = vectors.map((v) => v.expectedHex)
+    expect(new Set(hexes).size).toBe(hexes.length)
+  })
+})

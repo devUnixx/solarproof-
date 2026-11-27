@@ -75,6 +75,99 @@ cd apps/contracts && stellar contract build  # Build WASM
 
 ---
 
+## Adding a New Locale
+
+SolarProof currently ships with **English (`en`)** and **French (`fr`)**. Community translators are welcome to add new locales (e.g. Spanish, Portuguese, Arabic). Follow the steps below to add one.
+
+### Step-by-step
+
+1. **Copy the English source file.** All translations start from the canonical English message catalogue:
+
+   ```bash
+   cp apps/web/messages/en.json apps/web/messages/<locale>.json
+   ```
+
+   Use the [BCP 47](https://www.rfc-editor.org/info/bcp47) language tag as the filename (e.g. `es.json`, `pt-BR.json`, `ar.json`).
+
+2. **Translate every key.** Open `apps/web/messages/<locale>.json` and translate each value. Do **not**:
+   - rename, add, or remove keys (the key set must match `en.json` exactly);
+   - translate interpolation placeholders such as `{count}`, `{name}`, or `{date}` — keep them verbatim;
+   - translate HTML tags or ICU syntax (`{count, plural, ...}`).
+
+3. **Register the locale** in `apps/web/src/lib/locales.ts`. Add the new tag to each of the following exports:
+
+   | Export | Purpose | Example entry |
+   |---|---|---|
+   | `locales` | Array of supported locale tags | `'es'` |
+   | `LOCALE_LABELS` | Human-readable label shown in the language picker | `es: 'Español'` |
+   | `LOCALE_NAMES` | English name used in metadata / logs | `es: 'Spanish'` |
+   | `LOCALE_DIRECTIONS` | Text direction (`'ltr'` or `'rtl'`) | `es: 'ltr'` |
+
+   ```ts
+   // apps/web/src/lib/locales.ts (excerpt)
+   export const locales = ['en', 'fr', 'es'] as const
+
+   export const LOCALE_LABELS: Record<Locale, string> = {
+     en: 'English',
+     fr: 'Français',
+     es: 'Español',
+   }
+
+   export const LOCALE_NAMES: Record<Locale, string> = {
+     en: 'English',
+     fr: 'French',
+     es: 'Spanish',
+   }
+
+   export const LOCALE_DIRECTIONS: Record<Locale, 'ltr' | 'rtl'> = {
+     en: 'ltr',
+     fr: 'ltr',
+     es: 'ltr',
+   }
+   ```
+
+4. **Run the translation check.** The `i18n:check` script (`apps/web/scripts/check-translations.mjs`) verifies that every locale has 100% key coverage against `en.json` and that no placeholders are missing:
+
+   ```bash
+   pnpm --filter web i18n:check
+   ```
+
+   Fix any reported missing or extra keys before opening a PR. CI runs this check automatically.
+
+5. **Open a PR** using the `docs` or `feat` type, e.g. `feat(web): add Spanish locale`. Reference this section in the PR description.
+
+### Pluralisation rules per locale
+
+Pluralisation is handled by ICU MessageFormat. Each locale has its own set of plural categories — use the correct category keys in your translations.
+
+| Locale | Plural categories | Notes |
+|---|---|---|
+| English (`en`) | `one`, `other` | `one` for exactly 1, `other` for everything else (including 0). |
+| French (`fr`) | `one`, `many`, `other` | `one` covers 0 and 1; `many` is used for large numbers (e.g. millions) in formal contexts; `other` for the rest. |
+| Spanish (`es`) | `one`, `many`, `other` | `one` for exactly 1; `many` for large compact numbers; `other` otherwise. |
+| Portuguese (`pt`, `pt-BR`) | `one`, `many`, `other` | Same shape as Spanish; `one` for exactly 1. |
+| Arabic (`ar`) | `zero`, `one`, `two`, `few`, `many`, `other` | Six categories. Also **RTL** — set `LOCALE_DIRECTIONS.ar = 'rtl'`. |
+
+Example (English):
+
+```json
+"readings.count": "{count, plural, one {# reading} other {# readings}}"
+```
+
+Example (Arabic):
+
+```json
+"readings.count": "{count, plural, zero {لا قراءات} one {قراءة واحدة} two {قراءتان} few {# قراءات} many {# قراءة} other {# قراءة}}"
+```
+
+If you are unsure which categories apply to your locale, consult the [CLDR plural rules](https://cldr.unicode.org/index/cldr-spec/plural-rules) or run `new Intl.PluralRules('<locale>').resolvedOptions().pluralCategories` in Node.
+
+### RTL locales
+
+For right-to-left languages (Arabic, Hebrew, Persian, Urdu), set `LOCALE_DIRECTIONS.<locale> = 'rtl'`. The web app reads this map to set the `dir` attribute on `<html>`. Verify layouts in both directions before submitting.
+
+---
+
 ## PR Checklist
 
 Before opening a PR, confirm:
@@ -89,6 +182,7 @@ Before opening a PR, confirm:
 - [ ] Docs updated if public interfaces changed
 - [ ] PR description references the issue (`Closes #<n>`)
 - [ ] No secrets or `.env` files committed
+- [ ] For locale additions: `pnpm --filter web i18n:check` passes with 100% coverage
 
 ---
 
@@ -110,7 +204,21 @@ Before opening a PR, confirm:
 
 ---
 
+## Dependency Updates
+
+Dependency updates are automated via [Dependabot](.github/dependabot.yml):
+
+- **Schedule** — grouped PRs are opened weekly for npm and cargo dependencies, and monthly for GitHub Actions.
+- **Auto-merge** — minor and patch updates for npm and cargo are auto-merged once **all** CI checks pass, via [`.github/workflows/dependabot-auto-merge.yml`](.github/workflows/dependabot-auto-merge.yml).
+- **Major version bumps** — ignored by Dependabot and require a human-authored PR with review.
+- **Security advisories** — follow the existing severity-based auto-merge rules.
+
+If you need to land a dependency change manually, open a regular PR following the checklist above.
+
+---
+
 ## Smart Contract Changes
+=======
 
 Contract changes require extra care:
 
@@ -118,6 +226,45 @@ Contract changes require extra care:
 - Update `docs/contracts/<name>.md` for any interface changes
 - Run `cargo test` and include test output in the PR description
 - Tag breaking changes with the `breaking-change` label
+
+---
+
+## GitHub Actions Pinning Policy
+
+All third-party actions used in `.github/workflows/` **must be pinned to a full 40-character commit SHA** — never a mutable tag or branch (e.g. `@v4`, `@main`). A compromised or re-pointed tag could inject malicious code into CI, so SHAs are the only trusted reference.
+
+### Format
+
+Always add a trailing comment with the human-readable version so updates are reviewable:
+
+```yaml
+- uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+- uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+```
+
+Rules:
+
+- The SHA must be the **full 40 hex characters** — short SHAs are rejected.
+- The `# vX.Y.Z` comment is required and must match the pinned release.
+- Local actions (`./.github/actions/...`) and reusable workflows in this repo are exempt.
+- Never use `@latest`, `@main`, `@master`, or floating major tags (`@v4`).
+
+### Enforcement
+
+- **`supply-chain.yml`** runs on every PR and push to `develop`/`main`. It scans all workflow files and **fails the build** if any `uses:` entry references an action by tag, branch, or short SHA.
+- **Dependabot** (`.github/dependabot.yml`, `github-actions` ecosystem) opens PRs that bump pinned SHAs and update the version comment. Review and merge these like any other dependency update — do not edit the SHA by hand unless Dependabot can't.
+
+### Updating a pinned SHA
+
+1. Find the release tag you want on the action's GitHub releases page.
+2. Resolve the tag to its commit SHA:
+   ```bash
+   git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>
+   # or, for annotated tags, dereference with ^{}:
+   git ls-remote https://github.com/<owner>/<repo> 'refs/tags/<tag>*'
+   ```
+3. Replace the `uses:` line with the new SHA and update the `# vX.Y.Z` comment.
+4. Run the `supply-chain.yml` check locally (or push and let CI run) to confirm the pin is valid.
 
 ---
 
