@@ -265,16 +265,24 @@ export function middleware(req: NextRequest) {
 
   // ── Correlation ID injection ──────────────────────────────────────────────
   const correlationId = req.headers.get('x-correlation-id') ?? crypto.randomUUID()
+
+  // ── CSP nonce ─────────────────────────────────────────────────────────────
+  // Generate a fresh nonce per request so inline scripts (Next.js hydration,
+  // Sentry bootstrap) can be allow-listed without 'unsafe-inline'.
+  const cspNonce = generateCspNonce()
+
   const res = NextResponse.next({
     request: {
       headers: new Headers({
         ...Object.fromEntries(req.headers),
         'x-correlation-id': correlationId,
+        'x-csp-nonce': cspNonce,
       }),
     },
   })
   res.headers.set('x-correlation-id', correlationId)
   res.headers.set('API-Version', 'v1')
+  res.headers.set('Content-Security-Policy', buildCspHeader(cspNonce))
 
   // ── Attach CORS headers ───────────────────────────────────────────────────
   if (corsHeaders) {
