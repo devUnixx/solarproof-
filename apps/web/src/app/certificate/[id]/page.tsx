@@ -11,6 +11,8 @@ import {
   CheckCircle2,
   Clock,
   ExternalLink,
+  CalendarClock,
+  AlertTriangle,
 } from 'lucide-react'
 import { createServiceClient } from '@/lib/supabase'
 import { CertificateChain, type ChainStep } from '@/components/certificate-chain'
@@ -73,6 +75,9 @@ export default async function CertificatePage({
   // notFound() throws, so data is non-null here
   const { cert, reading } = data!
 
+  const expiresAt: string | null = cert.expires_at ?? null
+  const isExpired = expiresAt ? new Date(expiresAt).getTime() < Date.now() : false
+
   const steps: ChainStep[] = [
     {
       icon: Zap,
@@ -120,7 +125,9 @@ export default async function CertificatePage({
       status: cert.retired ? 'done' : 'pending',
       detail: cert.retired
         ? `Retired ${cert.retired_at ? new Date(cert.retired_at).toLocaleString() : ''}`
-        : 'Not yet retired — certificate is active',
+        : isExpired
+          ? 'Certificate has expired — retirement is no longer possible'
+          : 'Not yet retired — certificate is active',
     },
   ]
 
@@ -146,11 +153,16 @@ export default async function CertificatePage({
         </div>
 
         {/* Status badge */}
-        <div className="mt-3">
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           {cert.retired ? (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
               <FlameKindling className="h-3.5 w-3.5" aria-hidden="true" />
               Retired
+            </span>
+          ) : isExpired ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-red-100 px-3 py-1 text-xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400">
+              <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+              Expired · {Number(cert.kwh).toFixed(3)} kWh
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
@@ -159,6 +171,17 @@ export default async function CertificatePage({
             </span>
           )}
         </div>
+
+        {/* Expiry */}
+        {expiresAt && (
+          <div className="mt-2 flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+            <CalendarClock className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>
+              {isExpired ? 'Expired on ' : 'Valid until '}
+              <time dateTime={expiresAt}>{new Date(expiresAt).toLocaleString()}</time>
+            </span>
+          </div>
+        )}
       </header>
 
       {/* Printable certificate summary: QR code + key data */}

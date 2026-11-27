@@ -41,6 +41,7 @@ create table certificates (
   mint_tx_hash text not null unique,
   kwh numeric(12,4) not null,
   issued_at timestamptz not null default now(),
+  expires_at timestamptz,   -- nullable; null = never expires
   retired boolean not null default false,
   retired_at timestamptz,
   retired_by text
@@ -56,6 +57,7 @@ create index on readings(reading_hash);
 create index on certificates(cooperative_id);
 create index on certificates(reading_hash);
 create index on certificates(mint_tx_hash);
+create index on certificates(expires_at);
 ```
 
 ---
