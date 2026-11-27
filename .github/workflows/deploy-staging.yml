@@ -54,6 +54,59 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Check schema parity (staging vs production)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          STAGING_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF_STAGING }}
+          PRODUCTION_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF_PRODUCTION }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ] || \
+             [ -z "${STAGING_PROJECT_REF:-}" ] || \
+             [ -z "${PRODUCTION_PROJECT_REF:-}" ]; then
+            echo "::error::Missing Supabase secrets (SUPABASE_ACCESS_TOKEN, SUPABASE_PROJECT_REF_STAGING, SUPABASE_PROJECT_REF_PRODUCTION)"
+            exit 1
+          fi
+
+          fetch_migrations() {
+            local ref="$1"
+            pnpm dlx supabase@latest migration list \
+              --project-ref "$ref" \
+              --output json 2>/dev/null \
+              | jq -r '.migrations[] | select(.local == null or .remote != null) | .version' \
+              | sort -u
+          }
+
+          echo "Fetching production migration history…"
+          fetch_migrations "$PRODUCTION_PROJECT_REF" > /tmp/prod_migrations.txt
+
+          echo "Fetching staging migration history…"
+          fetch_migrations "$STAGING_PROJECT_REF" > /tmp/staging_migrations.txt
+
+          echo "Production migrations: $(wc -l < /tmp/prod_migrations.txt)"
+          echo "Staging migrations:    $(wc -l < /tmp/staging_migrations.txt)"
+
+          MISSING=$(comm -23 /tmp/prod_migrations.txt /tmp/staging_migrations.txt || true)
+
+          if [ -n "$MISSING" ]; then
+            echo "::error::Staging is behind production — missing migrations:"
+            echo "$MISSING"
+            {
+              echo "### ❌ Schema drift detected"
+              echo ""
+              echo "Staging is missing the following migrations present in production:"
+              echo '```'
+              echo "$MISSING"
+              echo '```'
+              echo ""
+              echo "See docs/runbooks/schema-drift.md for resolution steps."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "✓ Staging migration history matches or is ahead of production"
+
       - name: Deploy to Vercel (staging project)
         id: deploy
         env:

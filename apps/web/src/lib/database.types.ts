@@ -85,6 +85,7 @@ export interface Database {
           kwh: number; issued_at: string; retired: boolean
           retired_at: string | null; retired_by: string | null
           retire_tx_hash: string | null
+          expires_at: string | null
           erc1888_token_id: string | null
           erc1888_issuance_status: 'pending' | 'issued' | 'failed' | null
           erc1888_tx_hash: string | null
@@ -99,6 +100,7 @@ export interface Database {
           reading_hash: string; mint_tx_hash: string; anchor_tx_hash: string
           kwh: number; issued_at: string; retired: boolean
           retired_at?: string | null; retired_by?: string | null
+          expires_at?: string | null
           erc1888_token_id?: string | null
           erc1888_issuance_status?: 'pending' | 'issued' | 'failed' | null
           erc1888_tx_hash?: string | null
@@ -114,6 +116,7 @@ export interface Database {
           kwh: number; issued_at: string; retired: boolean
           retired_at: string | null; retired_by: string | null
           retire_tx_hash: string | null
+          expires_at: string | null
           erc1888_token_id: string | null
           erc1888_issuance_status: 'pending' | 'issued' | 'failed' | null
           erc1888_tx_hash: string | null
@@ -243,6 +246,22 @@ export interface Database {
           next_attempt_at: string | null; delivered_at: string | null
         }>
         Relationships: [{ foreignKeyName: 'notification_deliveries_notification_id_fkey'; columns: ['notification_id']; referencedRelation: 'notifications'; referencedColumns: ['id'] }]
+      }
+      cooperative_goals: {
+        Row: {
+          id: string; cooperative_id: string; period: 'monthly' | 'annual'
+          period_start: string; period_end: string; target_kwh: number
+          created_at: string; updated_at: string
+        }
+        Insert: {
+          cooperative_id: string; period: 'monthly' | 'annual'
+          period_start: string; period_end: string; target_kwh: number
+        }
+        Update: Partial<{
+          cooperative_id: string; period: 'monthly' | 'annual'
+          period_start: string; period_end: string; target_kwh: number
+        }>
+        Relationships: [{ foreignKeyName: 'cooperative_goals_cooperative_id_fkey'; columns: ['cooperative_id']; referencedRelation: 'cooperatives'; referencedColumns: ['id'] }]
       }
     }
     Views: Record<string, never>

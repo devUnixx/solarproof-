@@ -15,3 +15,19 @@ target/
 coverage/
 *.flamegraph.html
 reports/
+
+# Test snapshots
+**/__snapshots__/
+**/*.snap
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Editor and OS files
+.idea/
+.vscode/
+Thumbs.db
+
+# Playwright test artifacts
+test-results/
+playwright-report/

@@ -58,6 +58,10 @@ export const env = createEnv({
   server: {
     SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
     ADMIN_SECRET: z.string().min(16).optional(),
+    // Comma-separated list of allowed CIDRs for admin API endpoints.
+    // Example: 203.0.113.0/24,198.51.100.7/32
+    // Empty or unset = no IP restriction.
+    ADMIN_IP_ALLOWLIST: z.string().optional(),
     // Comma-separated list of allowed CORS origins.
     // Example: https://solarproof.vercel.app,https://staging.solarproof.vercel.app
     // Defaults to the explicit production allowlist; wildcards are rejected in production.
@@ -72,9 +76,14 @@ export const env = createEnv({
     READINGS_RATE_LIMIT_PER_MINUTE: z.string().optional(),
     READINGS_RATE_LIMIT_WINDOW_SECONDS: z.string().optional(),
     WEBHOOK_SECRET: z.string().min(16).optional(),
-    // Shared secret for zero-trust auth between Next.js and the bridge service.
-    // Sent as the X-Internal-Secret header on outbound bridge calls.
-    INTERNAL_BRIDGE_SECRET: z.string().min(32),
+    // PgBouncer pooled connection string (production). When set, server code
+    // should prefer this over direct Supabase connections to avoid exhausting
+    // the database connection limit under serverless load.
+    PGBOUNCER_URL: z.string().url().optional(),
+    // Number of server-side connections PgBouncer keeps per pool.
+    PGBOUNCER_POOL_SIZE: z.string().optional().default('10'),
+    // Maximum number of client (serverless) connections PgBouncer accepts.
+    PGBOUNCER_MAX_CLIENT_CONN: z.string().optional(),
     // EVM/Polygon certificate NFT minting (optional, opt-in per cooperative)
     EVM_NFT_MINTING_ENABLED: z
       .enum(['true', 'false'])
@@ -100,6 +109,7 @@ export const env = createEnv({
   runtimeEnv: {
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
     ADMIN_SECRET: process.env.ADMIN_SECRET,
+    ADMIN_IP_ALLOWLIST: process.env.ADMIN_IP_ALLOWLIST,
     CORS_ALLOWED_ORIGINS: process.env.CORS_ALLOWED_ORIGINS,
     MINTER_SECRET_ARN: process.env.MINTER_SECRET_ARN,
     MINTER_PREVIOUS_SECRET_ARN: process.env.MINTER_PREVIOUS_SECRET_ARN,
@@ -115,7 +125,9 @@ export const env = createEnv({
     READINGS_RATE_LIMIT_PER_MINUTE: process.env.READINGS_RATE_LIMIT_PER_MINUTE,
     READINGS_RATE_LIMIT_WINDOW_SECONDS: process.env.READINGS_RATE_LIMIT_WINDOW_SECONDS,
     WEBHOOK_SECRET: process.env.WEBHOOK_SECRET,
-    INTERNAL_BRIDGE_SECRET: process.env.INTERNAL_BRIDGE_SECRET,
+    PGBOUNCER_URL: process.env.PGBOUNCER_URL,
+    PGBOUNCER_POOL_SIZE: process.env.PGBOUNCER_POOL_SIZE,
+    PGBOUNCER_MAX_CLIENT_CONN: process.env.PGBOUNCER_MAX_CLIENT_CONN,
     EVM_NFT_MINTING_ENABLED: process.env.EVM_NFT_MINTING_ENABLED,
     EVM_RPC_URL: process.env.EVM_RPC_URL,
     EVM_PRIVATE_KEY: process.env.EVM_PRIVATE_KEY,
