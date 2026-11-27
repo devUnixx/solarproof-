@@ -1,24 +1,30 @@
-# cargo audit ignore file
-# Document known false positives here with justification and review date.
+# cargo audit ignore file — convenience copy; canonical config is .cargo/audit.toml
+# (cargo audit reads .cargo/audit.toml automatically; this file documents the
+# same exceptions for human reviewers browsing the repo root.)
 #
-# Format:
-# [advisories.ignore]
-# id = "RUSTSEC-YYYY-NNNN"  # reason — reviewed YYYY-MM-DD
-#
-# Example (uncomment and fill in when needed):
-# [advisories.ignore]
-# id = "RUSTSEC-2023-0001"  # only affects feature X which we don't use — reviewed 2026-04-23
+# Each entry below is a known transitive-dependency advisory that cannot be
+# resolved without an upstream change in the Soroban SDK. All are tracked in
+# GitHub issue #230.
 
 [advisories]
+# Warn when an ignored advisory is no longer present (helps keep this list tidy)
+warn_unused_ignores = true
+
 ignore = [
-    # `derivative` is unmaintained (RUSTSEC-2024-0388). It is pulled in
-    # transitively and has no fixed upgrade available. Tracked for replacement
-    # with a maintained alternative. — reviewed 2026-10-23
+    # RUSTSEC-2026-0387: crypto-bigint 0.5.5 — timing variability in
+    # constant-time operations. Transitive dep via soroban-env-host →
+    # elliptic-curve 0.13.x. Fix requires crypto-bigint >=0.7.6 (incompatible
+    # semver); no Soroban SDK version currently pulls that in.
+    # Reviewed 2026-11-30 · issue #230
+    "RUSTSEC-2026-0387",
+
+    # RUSTSEC-2024-0388: derivative 2.2.0 — unmaintained.
+    # Transitive dep via soroban-env-host / ark-* crates.
+    # Reviewed 2026-11-30 · issue #230
     "RUSTSEC-2024-0388",
-    # `paste` is no longer maintained (RUSTSEC-2024-0436). It is pulled in
-    # transitively and has no fixed upgrade available. Tracked for replacement
-    # with a maintained alternative. — reviewed 2026-10-23
+
+    # RUSTSEC-2024-0436: paste 1.0.15 — unmaintained.
+    # Transitive dep via soroban SDK macro crates.
+    # Reviewed 2026-11-30 · issue #230
     "RUSTSEC-2024-0436",
 ]
-# NOTE: RUSTSEC-2026-0387 (crypto-bigint timing variability) is intentionally
-# NOT ignored. It must be resolved by upgrading crypto-bigint to >=0.7.6.
