@@ -56,6 +56,8 @@ info:
 servers:
   - url: https://solarproof.vercel.app
     description: Production
+  - url: https://staging.solarproof.vercel.app
+    description: Staging
 
 security: []
 
@@ -101,6 +103,9 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: operator@example.com
+              password: supersecret
       responses:
         '200':
           description: Authentication successful
@@ -136,6 +141,9 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: operator@example.com
+              password: supersecret
       responses:
         '301':
           description: Permanently redirected to /api/v1/auth/login
@@ -192,6 +200,8 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/RefreshRequest'
+            example:
+              refresh_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example.refresh
       responses:
         '200':
           description: Token rotated successfully
@@ -384,6 +394,17 @@ paths:
                 $ref: '#/components/schemas/ReadingRequest'
               minItems: 1
               maxItems: 100
+            example:
+              - meter_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                kwh: 12.5
+                timestamp: 1745366400
+                signature_hex: "4b3e9f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f09a"
+                nonce: "unique-nonce-abc123"
+              - meter_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                kwh: 8.25
+                timestamp: 1745366460
+                signature_hex: "4b3e9f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f09b"
+                nonce: "unique-nonce-def456"
       responses:
         '207':
           description: Partial or full success — check per-reading status
@@ -468,6 +489,7 @@ paths:
           description: Certificate UUID, reading hash (64-char hex), or mint transaction hash
           schema:
             type: string
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
       responses:
         '200':
           description: Certificate found
@@ -826,6 +848,7 @@ paths:
           schema:
             type: string
             format: uuid
+          example: c0e1f2a3-b4c5-6789-abcd-ef0123456789
       responses:
         '200':
           description: Public cooperative profile
@@ -900,6 +923,11 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/CreateMarketplaceListingRequest'
+            example:
+              certificate_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+              asking_price: 25.5
+              currency: USD
+              note: Verified solar certificates, Oaxaca region
       responses:
         '201':
           description: Listing created
@@ -933,6 +961,7 @@ paths:
           schema:
             type: string
             format: uuid
+          example: 7f3a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8
       responses:
         '200':
           description: Listing record
@@ -955,6 +984,7 @@ paths:
           schema:
             type: string
             format: uuid
+          example: 7f3a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8
       responses:
         '200':
           description: Listing cancelled
@@ -993,12 +1023,16 @@ paths:
           schema:
             type: string
             format: uuid
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/TransferRequest'
+            example:
+              recipient_cooperative_id: c0e1f2a3-b4c5-6789-abcd-ef0123456789
+              listing_id: 7f3a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8
       responses:
         '200':
           description: Certificate transferred
@@ -1036,12 +1070,15 @@ paths:
           schema:
             type: string
             format: uuid
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/RetireRequest'
+            example:
+              wallet_address: GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUV
       responses:
         '200':
           description: Certificate retired successfully
@@ -1102,6 +1139,11 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/RegisterMeterRequest'
+            example:
+              name: Rooftop Meter 001
+              cooperative_id: c0e1f2a3-b4c5-6789-abcd-ef0123456789
+              serial_number: SN-000123
+              pubkey_hex: 3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29
       responses:
         '201':
           description: Meter registered
@@ -1134,6 +1176,7 @@ paths:
           schema:
             type: string
             format: uuid
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
       responses:
         '200':
           description: Meter deactivated
@@ -1162,6 +1205,7 @@ paths:
           schema:
             type: string
             format: uuid
+          example: 9d8c7b6a-5f4e-3d2c-1b0a-9f8e7d6c5b4a
       responses:
         '200':
           description: Job record
@@ -1245,6 +1289,10 @@ paths:
       operationId: getOpenApiSpec
       tags: [health]
       summary: Serve this OpenAPI specification as YAML
+      description: |
+        Returns the raw OpenAPI 3.1 document. The interactive API playground
+        (Redoc / Swagger UI) is rendered at `/api/docs` in the browser and
+        loads this spec; try-it-out is enabled with pre-filled example values.
       security: []
       responses:
         '200':
@@ -1280,6 +1328,7 @@ components:
         minimum: 1
         maximum: 100
         default: 20
+        example: 20
 
   responses:
     Unauthorized:
@@ -1349,9 +1398,11 @@ components:
         email:
           type: string
           format: email
+          example: operator@example.com
         password:
           type: string
           minLength: 8
+          example: supersecret
 
     RefreshRequest:
       type: object
@@ -1360,6 +1411,7 @@ components:
         refresh_token:
           type: string
           minLength: 1
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example.refresh
 
     SwitchCooperativeRequest:
       type: object
@@ -1396,13 +1448,16 @@ components:
           type: string
           format: uuid
           description: Registered meter identifier
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
         kwh:
           type: number
           exclusiveMinimum: 0
           description: Energy generated in kilowatt-hours
+          example: 12.5
         timestamp:
           type: integer
           description: Unix timestamp in seconds (must be within 5 minutes of server time)
+          example: 1745366400
         signature_hex:
           type: string
           minLength: 128
@@ -1410,11 +1465,13 @@ components:
           description: |
             Ed25519 signature of the canonical reading hash, hex-encoded (64 bytes = 128 hex chars).
             See `docs/ED25519_PROTOCOL.md` for the signing payload format.
+          example: "4b3e9f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f09a"
         nonce:
           type: string
           minLength: 1
           maxLength: 128
           description: Unique per-request nonce for replay protection (recommended)
+          example: "unique-nonce-abc123"
 
     ReadingResponse:
       type: object
@@ -1693,6 +1750,7 @@ components:
         wallet_address:
           type: string
           description: Stellar G-address of the certificate holder
+          example: GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUV
 
     RetireResponse:
       type: object
@@ -1812,17 +1870,21 @@ components:
         certificate_id:
           type: string
           format: uuid
+          example: a1b2c3d4-e5f6-7890-abcd-ef1234567890
         asking_price:
           type: number
           exclusiveMinimum: 0
           description: Off-chain asking price (settlement is manual in v1)
+          example: 25.5
         currency:
           type: string
           default: USD
           description: Currency of the asking price
+          example: USD
         note:
           type: ['string', 'null']
           maxLength: 500
+          example: Verified solar certificates, Oaxaca region
 
     MarketplaceListing:
       type: object
@@ -1878,10 +1940,12 @@ components:
         recipient_cooperative_id:
           type: string
           format: uuid
+          example: c0e1f2a3-b4c5-6789-abcd-ef0123456789
         listing_id:
           type: ['string', 'null']
           format: uuid
           description: Marketplace listing this transfer fulfils, if any
+          example: 7f3a1b2c-4d5e-6f70-8192-a3b4c5d6e7f8
 
     TransferResponse:
       type: object
@@ -1912,18 +1976,22 @@ components:
           type: string
           minLength: 1
           maxLength: 128
+          example: Rooftop Meter 001
         cooperative_id:
           type: string
           format: uuid
+          example: c0e1f2a3-b4c5-6789-abcd-ef0123456789
         serial_number:
           type: string
           minLength: 1
           maxLength: 64
+          example: SN-000123
         pubkey_hex:
           type: string
           minLength: 64
           maxLength: 64
           description: Ed25519 public key, hex-encoded (32 bytes = 64 hex chars)
+          example: 3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29
 
     Meter:
       type: object
