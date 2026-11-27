@@ -149,9 +149,79 @@ Retention compliance should be reviewed annually. A cron job or Supabase Edge Fu
 
 ---
 
-## 6. Cooperative Member PII — Deletion Procedure (GDPR Article 17)
+## 6. GDPR Article 30 — Data-Flow Diagram
 
-### 6.1 What "departure" means
+The diagram below maps every point where personal data enters, moves through, or leaves the SolarProof system. It satisfies the Article 30 "records of processing" requirement by identifying collection points, external processors, retention periods, and legal basis for each data flow.
+
+```mermaid
+flowchart TD
+    subgraph Subjects["Data Subjects"]
+        MEM["Cooperative Member\n(email, display_name, role)"]
+        OP["Cooperative Operator\n(admin_address, Stellar key)"]
+    end
+
+    subgraph SolarProof["SolarProof Platform (data controller)"]
+        AUTH["Supabase Auth\nauth.users\n—\nPII: email, display_name\nRetention: active + 90 days\nBasis: Contract (Art. 6.1b)"]
+        DB["Supabase Postgres\nreadings / certificates / meters\n—\nInternal + Restricted data\nRetention: 7–10 years (regulatory)\nBasis: Legal obligation (Art. 6.1c)"]
+        API["Next.js API Layer\n(Vercel)\n—\nIn-transit only; PII never persisted\nBasis: Legitimate interest (Art. 6.1f)"]
+        CACHE["Redis Cache\nsession:<id>, suspended:<id>\n—\nPII: operator_id (pseudonym)\nRetention: 24 h TTL (session)\nBasis: Contract (Art. 6.1b)"]
+        QUEUE["Redis Queue\nBullMQ jobs\n—\nNo PII — job payloads contain only\nUUIDs and reading hashes\nBasis: Contract (Art. 6.1b)"]
+        LOGS["Structured Logs\n(Vercel Log Drain)\n—\nPII scrubbed at source (email, JWT)\nRetention: 30 days\nBasis: Legitimate interest (Art. 6.1f)"]
+    end
+
+    subgraph External["External Processors"]
+        SUPA["Supabase\n(EU region)\nDPA: supabase.com/legal/dpa\nData: auth.users, all tables\nRetention: per controller schedule"]
+        SENTRY["Sentry\n(US, SCCs)\nDPA: sentry.io/legal/dpa\nData: error events (PII scrubbed)\nRetention: 90 days"]
+        VERCEL["Vercel\n(US, SCCs)\nDPA: vercel.com/legal/dpa\nData: request logs (IP, User-Agent)\nRetention: 30 days"]
+        STELLAR["Stellar Network\n(public blockchain)\nNo DPA — no PII stored on-chain\nData: tx hashes, kWh totals only"]
+    end
+
+    MEM -->|"Registration / login\nLegal basis: Contract"| AUTH
+    OP -->|"Admin address stored\nLegal basis: Contract"| DB
+
+    AUTH -->|"JWT claims (cooperative_id, role)\nIn-memory only"| API
+    API -->|"Validated reads/writes\nRow Level Security enforced"| DB
+    API -->|"Session token cached\n24 h TTL"| CACHE
+    API -->|"Anchor/mint jobs enqueued\nNo PII in payload"| QUEUE
+    API -->|"Error events (scrubbed)\nbeforeSend hook removes PII"| SENTRY
+    API -->|"Request logs\nIP + User-Agent only"| LOGS
+
+    DB -->|"Postgres hosted by"| SUPA
+    AUTH -->|"Auth service hosted by"| SUPA
+    API -->|"Deployed on"| VERCEL
+    LOGS -->|"Log drain to"| VERCEL
+    QUEUE -->|"Stellar transactions\n(hashes + kWh only)"| STELLAR
+
+    style Subjects fill:#e8f4f8,stroke:#2980b9
+    style SolarProof fill:#eafaf1,stroke:#27ae60
+    style External fill:#fef9e7,stroke:#f39c12
+```
+
+### Legal basis summary
+
+| Data category | Legal basis | GDPR Article |
+|---|---|---|
+| Member email and display name | Performance of a contract (membership agreement) | Art. 6(1)(b) |
+| Member role and cooperative association | Performance of a contract | Art. 6(1)(b) |
+| Energy readings and certificates | Legal obligation (energy metering regulation) | Art. 6(1)(c) |
+| Session cache (operator pseudonym) | Performance of a contract | Art. 6(1)(b) |
+| Error logs (scrubbed, no PII) | Legitimate interest (platform security and reliability) | Art. 6(1)(f) |
+| Request logs on Vercel (IP, User-Agent) | Legitimate interest (security monitoring) | Art. 6(1)(f) |
+
+### External processor references
+
+| Processor | Region | DPA / transfer mechanism |
+|---|---|---|
+| Supabase | EU (Frankfurt) | Standard Contractual Clauses; DPA at supabase.com/legal/dpa |
+| Sentry | US | Standard Contractual Clauses; DPA at sentry.io/legal/dpa |
+| Vercel | US | Standard Contractual Clauses; DPA at vercel.com/legal/dpa |
+| Stellar Network | Public blockchain | No personal data transferred; hashes and kWh totals only |
+
+---
+
+## 7. Cooperative Member PII — Deletion Procedure (GDPR Article 17)
+
+### 7.1 What "departure" means
 
 A member is considered to have departed when **any** of the following occurs:
 - The member explicitly requests account deletion (GDPR Art. 17 right to erasure).
@@ -160,7 +230,7 @@ A member is considered to have departed when **any** of the following occurs:
 
 Departure time is the timestamp of the triggering event. The 90-day retention clock starts from this point.
 
-### 6.2 Why 90 days (and not immediate)
+### 7.2 Why 90 days (and not immediate)
 
 A short retention window after departure balances the member's erasure right with operational integrity:
 - **Dispute resolution** — 90 days allows resolution of vote-tally or membership disputes.
@@ -169,7 +239,7 @@ A short retention window after departure balances the member's erasure right wit
 
 After the 90-day window, **all** member PII is erased — no indefinite retention of email, display name, or role.
 
-### 6.3 Deletion steps
+### 7.3 Deletion steps
 
 Deletion is performed by a service-role server function (never exposed to the anon/authenticated client). Each step is recorded in the external audit log with timestamp, actor, and affected record identifiers.
 
@@ -181,7 +251,7 @@ Deletion is performed by a service-role server function (never exposed to the an
 
 > **Re-identification is out of scope.** On-chain Stellar addresses remain public and immutable. The deletion procedure removes the off-chain mapping from an address to a natural person, which is the PII component. Once `cooperative_id`/`role` claims and the `auth.users` row are gone, an on-chain address can no longer be tied to a departed member through SolarProof's systems.
 
-### 6.4 Review against GDPR Article 17
+### 7.4 Review against GDPR Article 17
 
 | Art. 17 provision | How this policy satisfies it |
 |---|---|

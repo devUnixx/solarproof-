@@ -214,6 +214,50 @@ solarproof/
 
 ---
 
+## Infrastructure as Code
+
+Production infrastructure is managed with **Terraform** under [`infra/terraform`](infra/terraform). Manual changes in the Supabase or Vercel dashboards will show up as drift in `terraform plan` and should be reconciled through code.
+
+### What is managed
+
+| Module | Resources |
+|---|---|
+| `modules/supabase` | Supabase project, Edge Functions, and project secrets |
+| `modules/vercel` | Vercel project and environment variables |
+
+### Remote state
+
+State is stored in an encrypted S3 backend with DynamoDB state locking:
+
+| Setting | Value |
+|---|---|
+| Backend | S3 (`solarproof-terraform-state`) |
+| Locking | DynamoDB table (`solarproof-terraform-locks`) |
+| Encryption | SSE enabled on the bucket; state is never committed to git |
+
+Backend configuration lives in `infra/terraform/backend.tf` and is initialised with:
+
+```bash
+cd infra/terraform
+terraform init
+```
+
+### Usage
+
+```bash
+cd infra/terraform
+terraform plan    # review drift / pending changes
+terraform apply   # provision Supabase + Vercel resources
+```
+
+Secrets (Supabase access token, Vercel API token, etc.) are supplied via environment variables (`TF_VAR_*`) and are never stored in the repository.
+
+### CI
+
+The [`terraform-plan`](.github/workflows/terraform-plan.yml) workflow runs `terraform fmt -check`, `terraform validate`, and `terraform plan` on every pull request that touches `infra/terraform/**`, then posts the plan diff as a PR comment for review.
+
+---
+
 ## Status & Uptime Monitoring
 
 Production endpoint health is tracked at **[status.solarproof.app](https://status.solarproof.app)**, powered by [Upptime](https://upptime.js.org) via the `katecatherinaa/solarproof-status` repository.
@@ -237,6 +281,26 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). PRs target `develop`.
 See [CHANGELOG.md](CHANGELOG.md) for a history of notable changes.
 
 ---
+
+## Localisation
+
+SolarProof currently ships in **English** and **French**. Community translators are welcome to add new locales (e.g. Spanish, Portuguese).
+
+See the [translation contribution guide](CONTRIBUTING.md#adding-a-new-locale) in CONTRIBUTING.md for the step-by-step process: copy `en.json` → translate → add the locale to `SUPPORTED_LOCALES` → run `pnpm i18n:check`. Per-locale pluralisation rules are documented there as well.
+
+---
+
+## Security
+
+We take the security of SolarProof seriously. If you discover a vulnerability, please report it **privately** — do not open a public issue.
+
+- **Process:** see [SECURITY.md](SECURITY.md) for our full responsible-disclosure policy.
+- **Private reporting:** email **security@solarproof.dev**, or use GitHub's private security advisories (the repository's *Security* tab → *Report a vulnerability*).
+- **Response SLA:** we acknowledge every report within **48 hours** and will keep you updated on remediation progress.
+
+---
+
+## License
 
 ## License
 

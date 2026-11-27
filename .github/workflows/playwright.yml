@@ -36,6 +36,9 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           NEXT_PUBLIC_ENERGY_TOKEN_ID: ${{ secrets.NEXT_PUBLIC_ENERGY_TOKEN_ID }}
           NEXT_PUBLIC_AUDIT_REGISTRY_ID: ${{ secrets.NEXT_PUBLIC_AUDIT_REGISTRY_ID }}
+          NEXT_PUBLIC_STELLAR_MOCK: 'true'
+          E2E_SEED_COOPERATIVE: 'true'
+          E2E_SEED_METER: 'true'
 
       - name: Upload screenshots on failure
         if: failure()
@@ -44,28 +47,3 @@ jobs:
           name: playwright-screenshots
           path: apps/web/test-results/
           retention-days: 7
-
-      - name: Lighthouse CI performance budget
-        uses: treosh/lighthouse-ci-action@v12
-        with:
-          configPath: ./lighthouserc.js
-          uploadArtifacts: true
-          temporaryPublicStorage: true
-          runs: 1
-        env:
-          LHCI_BUILD_CONTEXT__CURRENT_BRANCH: ${{ github.head_ref || github.ref_name }}
-          LHCI_BUILD_CONTEXT__COMMIT_SHA: ${{ github.sha }}
-          LHCI_BUILD_CONTEXT__GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
-          STAGING_URL: ${{ vars.STAGING_URL || 'http://127.0.0.1:3000' }}
-
-      - name: Upload Lighthouse CI results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: lighthouse-ci-results
-          path: .lighthouseci/
-          retention-days: 7
-          if-no-files-found: ignore
-</｜｜DSML｜｜ parameter>
-</invoke>

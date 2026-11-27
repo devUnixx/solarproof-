@@ -38,6 +38,8 @@ function clearPersistedSession(): void {
 
 export function useWallet() {
   const [state, setState] = useState<WalletState>(initial)
+  // `loading` is true during the initial session restore and while a connect
+  // request is in flight, so the navbar can render a pending indicator.
   const [loading, setLoading] = useState(true)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -161,14 +163,25 @@ export function useWallet() {
     if (!isFreighterAvailable()) {
       throw new Error('Freighter wallet extension not found. Please install it.')
     }
-    const freighter = getFreighter()
-    await freighter.requestAccess()
-    const address: string = await freighter.getPublicKey()
-    const next: WalletState = { address, connected: true }
-    setState(next)
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-    startPoll()
-    return address
+    setLoading(true)
+    try {
+      const freighter = getFreighter()
+      await freighter.requestAccess()
+      const address: string = await freighter.getPublicKey()
+      const next: WalletState = { address, connected: true }
+      // Update in-memory state first so the navbar reacts immediately;
+      // persistence is best-effort and must not delay the UI update.
+      setState(next)
+      try {
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+      } catch {
+        // Storage unavailable (e.g. private mode) — keep the live session.
+      }
+      startPoll()
+      return address
+    } finally {
+      setLoading(false)
+    }
   }, [startPoll])
 
   // ── disconnect ─────────────────────────────────────────────────────────────
