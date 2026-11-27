@@ -219,7 +219,7 @@ sha256sum target/wasm32-unknown-unknown/release/energy_token.wasm
 
 ---
 
-## 6. Rollback procedure
+## 7. Rollback procedure
 
 Soroban contracts are immutable once deployed — you cannot overwrite a contract ID. The rollback procedure is:
 
@@ -233,7 +233,7 @@ For the `audit_registry` contract specifically, all historical anchors remain va
 
 ---
 
-## 7. Register a meter after deployment
+## 8. Register a meter after deployment
 
 ```bash
 node scripts/gen-meter-key.mjs

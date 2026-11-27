@@ -189,6 +189,34 @@ impl AuditRegistry {
             .set(&DataKey::ApiSigner, &new_signer);
     }
 
+    /// Rotate the contract administrator to `new_admin`. Current admin only.
+    ///
+    /// # Arguments
+    /// * `new_admin` — address that becomes the new administrator.
+    ///
+    /// # Authorization
+    /// Requires the current admin's authorisation.
+    ///
+    /// # Events
+    /// Emits `(topic: "admin_rot", data: (old_admin, new_admin))`.
+    ///
+    /// # Panics
+    /// * `"not initialized"` if the contract has not been initialised.
+    pub fn rotate_admin(env: Env, new_admin: soroban_sdk::Address) {
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        old_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (symbol_short!("admin_rot"),),
+            (old_admin, new_admin),
+        );
+    }
+=======
+
     /// Returns the current authorised API signer address.
     ///
     /// # Panics
@@ -678,6 +706,42 @@ mod tests {
         let h = hash(&env);
         client.anchor(&new_signer, &h, &make_nonce(&env, 1));
         assert!(client.is_anchored(&h));
+    }
+
+    #[test]
+    fn test_rotate_admin_updates_admin() {
+        let (env, _api_signer, client) = setup();
+        let new_admin = soroban_sdk::Address::generate(&env);
+        client.rotate_admin(&new_admin);
+        assert_eq!(client.admin(), new_admin);
+    }
+
+    #[test]
+    fn test_rotate_admin_emits_event() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::{IntoVal, Symbol, TryIntoVal};
+
+        let (env, _api_signer, client) = setup();
+        let old_admin = client.admin();
+        let new_admin = soroban_sdk::Address::generate(&env);
+        client.rotate_admin(&new_admin);
+
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        assert_eq!(
+            last.0,
+            client.address.clone(),
+            "event must be emitted by the contract"
+        );
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = last.1.clone();
+        assert_eq!(
+            topics.get(0).unwrap(),
+            Symbol::new(&env, "admin_rot").into_val(&env)
+        );
+        let (emitted_old, emitted_new): (Address, Address) =
+            last.2.try_into_val(&env).unwrap();
+        assert_eq!(emitted_old, old_admin);
+        assert_eq!(emitted_new, new_admin);
     }
 
     #[test]
