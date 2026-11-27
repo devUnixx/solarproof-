@@ -11,6 +11,9 @@ const config = {
   mutate: [
     'src/app/api/verify/route.ts',
     'src/app/api/audit-log/route.ts',
+    // crypto.ts targeted per issue #746 so mutations in computeReadingHash()
+    // and verifyReadingSignature() are detected.
+    'src/lib/crypto.ts',
   ],
   // high/low kept at 90 per issue #97; break is configurable via
   // MUTATION_THRESHOLD (default 70) per issue #756.
