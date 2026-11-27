@@ -198,6 +198,10 @@ const VERSION: &str = "1.0.0";
 /// Prevents single large holders from dominating votes.
 const DEFAULT_VOTE_WEIGHT_CAP: i128 = 1_000_000;
 
+/// Maximum number of active proposal IDs returned by `active_proposals()`
+/// (issue #699). Bounds the gas cost of the read-only query.
+pub const MAX_ACTIVE_PROPOSALS: u32 = 100;
+
 /// Cooperative governance contract.
 #[contract]
 pub struct CommunityGovernance;
@@ -845,6 +849,41 @@ impl CommunityGovernance {
             .unwrap_or(0)
     }
 
+    /// Returns the IDs of all proposals currently in `Active` status (issue #699).
+    ///
+    /// Read-only: performs no state mutation. The scan is bounded by
+    /// `MAX_ACTIVE_PROPOSALS` (default: 100) so the gas cost stays predictable
+    /// even when many proposals exist.
+    pub fn active_proposals(env: Env) -> soroban_sdk::Vec<u32> {
+        let mut result: soroban_sdk::Vec<u32> = soroban_sdk::Vec::new(&env);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProposalCount)
+            .unwrap_or(0);
+        if count == 0 {
+            return result;
+        }
+        let proposals: Map<u32, Proposal> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposals)
+            .expect("not initialized");
+        let mut id: u32 = 1;
+        while id <= count {
+            if result.len() >= MAX_ACTIVE_PROPOSALS {
+                break;
+            }
+            if let Some(p) = proposals.get(id) {
+                if p.status == ProposalStatus::Active {
+                    result.push_back(id);
+                }
+            }
+            id += 1;
+        }
+        result
+    }
+
     pub fn admin(env: Env) -> Address {
         env.storage().instance().get(&DataKey::Admin).expect("not initialized")
     }
@@ -1412,6 +1451,101 @@ mod tests {
     fn test_get_proposal_nonexistent_returns_none() {
         let (_env, _admin, client) = setup();
         assert!(client.get_proposal(&99_u32).is_none());
+    }
+
+    // ── active_proposals tests (issue #699) ──────────────────────────────────
+
+    /// No proposals created → empty result.
+    #[test]
+    fn test_active_proposals_zero() {
+        let (_env, _admin, client) = setup();
+        let active = client.active_proposals();
+        assert_eq!(active.len(), 0, "no proposals → empty active list");
+    }
+
+    /// A single active proposal is returned.
+    #[test]
+    fn test_active_proposals_one() {
+        let (env, _admin, client) = setup();
+        let proposer = Address::generate(&env);
+        let id = client.propose(
+            &proposer,
+            &String::from_str(&env, "A"),
+            &String::from_str(&env, "D"),
+        );
+        let active = client.active_proposals();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active.get(0).unwrap(), id);
+    }
+
+    /// Several proposals: only those still Active are returned.
+    #[test]
+    fn test_active_proposals_n_filters_finalized() {
+        let (env, _admin, client) = setup();
+        let proposer = Address::generate(&env);
+
+        // Create 4 proposals.
+        let id1 = client.propose(
+            &proposer,
+            &String::from_str(&env, "A"),
+            &String::from_str(&env, "D"),
+        );
+        let id2 = client.propose(
+            &proposer,
+            &String::from_str(&env, "B"),
+            &String::from_str(&env, "D"),
+        );
+        let id3 = client.propose(
+            &proposer,
+            &String::from_str(&env, "C"),
+            &String::from_str(&env, "D"),
+        );
+        let id4 = client.propose(
+            &proposer,
+            &String::from_str(&env, "D"),
+            &String::from_str(&env, "D"),
+        );
+
+        // Finalize id2 and id4 so they are no longer Active.
+        env.ledger().with_mut(|l| l.sequence_number += 101);
+        client.finalize(&id2);
+        client.finalize(&id4);
+
+        let active = client.active_proposals();
+        assert_eq!(active.len(), 2, "only 2 proposals remain active");
+        assert_eq!(active.get(0).unwrap(), id1);
+        assert_eq!(active.get(1).unwrap(), id3);
+    }
+
+    /// The result is bounded by MAX_ACTIVE_PROPOSALS.
+    #[test]
+    fn test_active_proposals_bounded_by_max() {
+        let (env, _admin, client) = setup();
+        let proposer = Address::generate(&env);
+
+        // Create more active proposals than the cap allows.
+        let total = MAX_ACTIVE_PROPOSALS + 5;
+        for i in 0..total {
+            client.propose(
+                &proposer,
+                &String::from_str(&env, "T"),
+                &String::from_str(&env, "D"),
+            );
+            let _ = i;
+        }
+
+        let active = client.active_proposals();
+        assert_eq!(
+            active.len(),
+            MAX_ACTIVE_PROPOSALS,
+            "result must be bounded by MAX_ACTIVE_PROPOSALS"
+        );
+        // IDs are returned in ascending order starting from 1.
+        assert_eq!(active.get(0).unwrap(), 1);
+        assert_eq!(
+            active.get(MAX_ACTIVE_PROPOSALS - 1).unwrap(),
+            MAX_ACTIVE_PROPOSALS
+        );
     }
 
     /// Mixed yes/no votes: majority no → Rejected.
